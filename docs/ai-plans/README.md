@@ -1,6 +1,6 @@
 # AI Plans
 
-This folder stores dated AI-assisted planning documents for larger product, architecture, and workflow changes in VS Text.
+This folder stores dated AI-assisted planning documents for larger product, architecture, and workflow changes in vsText.
 
 These files are useful as design history and implementation rationale, but they should not be treated as the live source of truth for current project status. For the current project snapshot, use [`PLAN.md`](../../PLAN.md).
 

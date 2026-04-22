@@ -76,7 +76,7 @@ export interface LocalWorkspaceIoProvider {
   readBlob: (document: FileLocator, mimeType?: string) => Promise<Blob>;
   writeText: (document: FileLocator, content: string) => Promise<FileWriteResult>;
   getSnapshot: (document: FileLocator) => Promise<WorkspaceFileSnapshot | null>;
-  scanWorkspace: (rootPath?: string) => Promise<WorkspaceFileSnapshot[]>;
+  scanWorkspace: (rootPath?: string, skippedFolders?: string[]) => Promise<WorkspaceFileSnapshot[]>;
 }
 
 export interface ProviderRegistry {
@@ -170,15 +170,16 @@ export function createProviderRegistry(context: ProviderRuntimeContext): Provide
 
         return null;
       },
-      async scanWorkspace(rootPath) {
+      async scanWorkspace(rootPath, skippedFolders = []) {
         if (context.electronAPI && rootPath) {
-          return context.electronAPI.scanWorkspace(rootPath);
+          return context.electronAPI.scanWorkspace(rootPath, skippedFolders);
         }
 
         if (context.browserWorkspaceDirectoryHandleRef.current) {
           return scanBrowserWorkspace(
             context.browserWorkspaceDirectoryHandleRef.current,
-            context.browserWorkspaceFileHandlesRef.current
+            context.browserWorkspaceFileHandlesRef.current,
+            skippedFolders
           );
         }
 

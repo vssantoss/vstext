@@ -2,50 +2,7 @@
 
 All notable project changes are documented here.
 
-## [Unreleased]
-
-### Added
-
-- VS Code–style preview tabs: single-click opens a file in a reusable italic preview tab; double-click (or editing) promotes it to a permanent tab.
-- Tab reordering via native HTML5 drag-and-drop, with drop indicators drawn before/after the hover target.
-- Split editors / multi-pane layouts: per-group tab strips with independent active and preview tabs, a `Split Right` button on the tab strip, resize handles between groups, and auto-collapse of empty groups with group-size redistribution.
-- Drag-to-move tabs across editor groups, including drop-on-editor-body to move a tab to the end of a non-focused group; drop targets draw a dashed accent overlay over the surface.
-- Resizable split panes inside the editor surface (Markdown preview and merge review), clamped between 15% and 85%, with double-click to reset to 50%.
-- `EditorSurfacePlaceholder` inline empty state rendered while no file is open, so the heavy editor chunk is not fetched until it is actually needed.
-- PDF preview support: `.pdf` files appear in the workspace tree and open in a dedicated read-only iframe viewer inside the editor pane. Browser workspaces stream PDFs via the File System Access API; Electron workspaces read them through a new `local:read-file-bytes` IPC channel. Blob URLs are created lazily per active PDF tab and revoked when the PDF is closed.
-
-### Changed
-
-- Lazy-loaded `EditorSurface` via `React.lazy` + `Suspense`; CodeMirror and its language parsers now ship in a separate chunk that is only downloaded when the user opens a file.
-- Extracted `MarkdownPreview` into its own module, lazy-loaded from inside `EditorSurface`, so `react-markdown`, `remark-gfm`, and `rehype-sanitize` only load when the preview pane is opened.
-- Split `lib/language.ts` into a lightweight metadata module (stays in main bundle) and a new `lib/languageExtensions.ts` that holds the CodeMirror language parsers and is only imported by `EditorSurface`, moving ~600 KB of parser code out of the initial bundle.
-- Main (initial) JS bundle reduced from ~1016 KB (≈346 KB gzipped) to ~389 KB (≈122 KB gzipped).
-
-### Verified
-
-- `pnpm exec tsc -p apps/web/tsconfig.json --noEmit` (clean)
-- `pnpm test` (20/20 passing)
-- `pnpm build` (production bundle emitted; editor and markdown chunks split out)
-
-## [0.2.0] - 2026-04-19
-
-### Changed
-
-- Redesigned the application shell to match a desktop IDE layout (title bar + activity bar + sidebar + editor + status bar), replacing the card-and-topbar layout.
-- Rewrote the design system to use neutral VS Code–style grays (dark `#1e1e1e`, light `#f8f8f8`), 4–6px radii, 1px borders, and flat surfaces without backdrop blur.
-- Replaced the warm cream light theme with a neutral light theme.
-- Moved workspace actions (Open Folder, Load Sample, Save File, Save Session) into a title-bar overflow menu.
-- Moved session status, cloud provider cards, and theme controls into dedicated sidebar activities.
-- Moved the editor meta row (path, language, dirty state) into the new status bar, which also shows cursor line/column and a theme toggle.
-- Reshaped the tab strip to squared tabs with a top accent, icon-per-filetype, and hover-revealed close button.
-- Rewrote the CodeMirror editor theme for both light and dark to match the new shell.
-- Switched UI typography to Inter and editor typography to JetBrains Mono (loaded from Google Fonts).
-- Stopped writing workspace session files into the opened work folder.
-- Moved shared session persistence to a user-chosen external workspace bundle folder containing `vstext.json` and `vstext/drafts`.
-- Added portable local workspace locators for bundle reopen flows, using bundle-relative paths plus per-device absolute hints.
-- Split browser workspace access from browser bundle access so local file saves and shared session saves use separate handles.
-- Stopped auto-opening the first file after selecting a folder; the editor area now stays empty until the user picks a file from the tree. Restoring a saved session from a workspace bundle still reopens its saved tabs.
-- Surfaced folder-open failures through a dismissible error banner instead of fleeting status-bar text.
+## [0.2.0] - 2026-04-21
 
 ### Added
 
@@ -64,6 +21,51 @@ All notable project changes are documented here.
 - `Skip <folder> folder` on the workspace scan overlay after the same non-root folder stays active for 10 seconds, skipping the rest of that subtree while keeping anything already scanned inside it.
 - Throttled IPC progress channel `local:open-directory:progress` on the Electron main process and an `onOpenDirectoryProgress` subscription on the preload bridge.
 - `onProgress` option on `openBrowserWorkspace` so the browser walker can report live scan progress to the renderer.
+- VS Code–style preview tabs: single-click opens a file in a reusable italic preview tab; double-click (or editing) promotes it to a permanent tab.
+- Tab reordering via native HTML5 drag-and-drop, with drop indicators drawn before/after the hover target.
+- Split editors / multi-pane layouts: per-group tab strips with independent active and preview tabs, a `Split Right` button on the tab strip, resize handles between groups, and auto-collapse of empty groups with group-size redistribution.
+- Drag-to-move tabs across editor groups, including drop-on-editor-body to move a tab to the end of a non-focused group; drop targets draw a dashed accent overlay over the surface.
+- Resizable split panes inside the editor surface (Markdown preview and merge review), clamped between 15% and 85%, with double-click to reset to 50%.
+- `EditorSurfacePlaceholder` inline empty state rendered while no file is open, so the heavy editor chunk is not fetched until it is actually needed.
+- PDF preview support: `.pdf` files appear in the workspace tree and open in a dedicated read-only iframe viewer inside the editor pane. Browser workspaces stream PDFs via the File System Access API; Electron workspaces read them through a new `local:read-file-bytes` IPC channel. Blob URLs are created lazily per active PDF tab and revoked when the PDF is closed.
+- Structured renderer activity logs for workspace scans and polls, skipped folders, tab lifecycle, file reads, document content changes, and buffer lifecycle, with inline JSON payloads instead of `[object Object]`.
+
+### Changed
+
+- Redesigned the application shell to match a desktop IDE layout (title bar + activity bar + sidebar + editor + status bar), replacing the card-and-topbar layout.
+- Rewrote the design system to use neutral VS Code–style grays (dark `#1e1e1e`, light `#f8f8f8`), 4–6px radii, 1px borders, and flat surfaces without backdrop blur.
+- Replaced the warm cream light theme with a neutral light theme.
+- Moved workspace actions (Open Folder, Load Sample, Save File, Save Session) into a title-bar overflow menu.
+- Moved session status, cloud provider cards, and theme controls into dedicated sidebar activities.
+- Moved the editor meta row (path, language, dirty state) into the new status bar, which also shows cursor line/column and a theme toggle.
+- Reshaped the tab strip to squared tabs with a top accent, icon-per-filetype, and hover-revealed close button.
+- Rewrote the CodeMirror editor theme for both light and dark to match the new shell.
+- Switched UI typography to Inter and editor typography to JetBrains Mono (loaded from Google Fonts).
+- Stopped writing workspace session files into the opened work folder.
+- Moved shared session persistence to a user-chosen external workspace bundle folder containing `vstext.json` and `vstext/drafts`.
+- Added portable local workspace locators for bundle reopen flows, using bundle-relative paths plus per-device absolute hints.
+- Split browser workspace access from browser bundle access so local file saves and shared session saves use separate handles.
+- Stopped auto-opening the first file after selecting a folder; the editor area now stays empty until the user picks a file from the tree. Restoring a saved session from a workspace bundle still reopens its saved tabs.
+- Surfaced folder-open failures through a dismissible error banner instead of fleeting status-bar text.
+- Lazy-loaded `EditorSurface` via `React.lazy` + `Suspense`; CodeMirror and its language parsers now ship in a separate chunk that is only downloaded when the user opens a file.
+- Extracted `MarkdownPreview` into its own module, lazy-loaded from inside `EditorSurface`, so `react-markdown`, `remark-gfm`, and `rehype-sanitize` only load when the preview pane is opened.
+- Split `lib/language.ts` into a lightweight metadata module (stays in main bundle) and a new `lib/languageExtensions.ts` that holds the CodeMirror language parsers and is only imported by `EditorSurface`, moving ~600 KB of parser code out of the initial bundle.
+- Main (initial) JS bundle reduced from ~1016 KB (≈346 KB gzipped) to ~389 KB (≈122 KB gzipped).
+- App startup now holds on a neutral boot screen while restoring the last workspace, instead of briefly rendering the sample workspace and then swapping to the cached one.
+- Cached sample-workspace restores now rehydrate built-in sample buffers and read bundled sample file content directly instead of falling through to unreadable local-provider paths.
+- Desktop cached-workspace restore now re-registers Electron filesystem access before hydrating the renderer, so restored workspaces can read files and rescan immediately after relaunch.
+- Restored workspace trees are rebuilt from persisted file records so Electron/local tree node ids stay aligned with live `fileMap` ids after cache restore.
+- Background scans now keep the user's skipped-folder list consistent across Electron and browser walkers, including pruning skipped subtrees when a folder is skipped mid-scan.
+
+### Fixed
+
+- Opening files from the bundled sample/demo workspace no longer creates blank tabs or throws `This workspace is not readable in the current runtime.` in the renderer.
+- Startup cache restore no longer races with workspace persistence and no longer restores both the last local workspace and `Sample Notes` on the same launch.
+- Restored desktop workspaces no longer fail file reads or background rescans after relaunch because the Electron root registry lost the previously opened folder.
+- Background polling no longer interprets skipped folders or missing restored-root access as mass deletions that empty the workspace tree.
+- Files in restored workspaces now open reliably before and after background scan events, including after cache hydration and tree rebuilds.
+- Single-clicking an already promoted tab no longer demotes it back into the preview slot; promoted tabs now stay pinned until the user closes them.
+- Skipping a folder is now logged explicitly with the folder name and relative path during workspace scan telemetry.
 
 ### Verified
 
@@ -71,12 +73,18 @@ All notable project changes are documented here.
 - `corepack pnpm test` (14/14 passing)
 - `corepack pnpm build` (production bundle + PWA manifest emitted)
 - `corepack pnpm dev` (Vite dev server serves the new shell)
+- `pnpm exec tsc -p apps/web/tsconfig.json --noEmit` (clean)
+- `pnpm test` (20/20 passing)
+- `pnpm build` (production bundle emitted; editor and markdown chunks split out)
+- `pnpm test:web -- apps/web/src/sampleWorkspace.test.ts`
+- `pnpm test:web -- apps/web/src/lib/providers.test.ts apps/web/src/lib/localWorkspace.test.ts`
+- `pnpm test:web -- apps/web/src/lib/editorRuntime.test.ts`
+- `pnpm build:web`
 
 ### Known Follow-ups
 
 - Electron frameless window still needs a manual cross-platform smoke test (`corepack pnpm dev:desktop`) for drag region and native control overlay.
 - Sidebar width is not yet persisted across reloads.
-- Large JS bundle (~1.2 MB) warning from Vite remains; not addressed in this change.
 - Scan overlay + error banner still need a manual smoke test against a large OneDrive-synced project and a forced-failure case (folder renamed mid-scan).
 
 ## [0.1.0] - 2026-04-16

@@ -175,6 +175,64 @@ textarea:focus-visible,
   color: var(--text);
 }
 
+.app-boot {
+  grid-row: 1 / -1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--accent) 20%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, #000 10%), var(--bg));
+}
+
+.app-boot__panel {
+  width: min(420px, calc(100vw - 48px));
+  padding: 24px 26px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sidebar-bg) 92%, transparent);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+}
+
+.app-boot__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.app-boot__mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-boot__name {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.app-boot__title {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.app-boot__hint {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* ---------- TitleBar ---------- */
 
 .titlebar {

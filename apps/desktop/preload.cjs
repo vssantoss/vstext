@@ -7,10 +7,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openDirectory: (scanId) => ipcRenderer.invoke("local:open-directory", scanId),
   openDirectoryByPath: (absolutePath, scanId) =>
     ipcRenderer.invoke("local:open-directory-by-path", absolutePath, scanId),
+  restoreWorkspaceAccess: (rootPath) => ipcRenderer.invoke("local:restore-workspace-access", rootPath),
   cancelOpenDirectoryScan: (scanId) => ipcRenderer.invoke("local:cancel-open-directory", scanId),
   skipOpenDirectoryFolder: (scanId, folderPath) =>
     ipcRenderer.invoke("local:skip-open-directory-folder", scanId, folderPath),
-  scanWorkspace: (rootPath) => ipcRenderer.invoke("local:scan-workspace", rootPath),
+  scanWorkspace: (rootPath, skippedFolders) => ipcRenderer.invoke("local:scan-workspace", rootPath, skippedFolders),
   getFileSnapshot: (absolutePath) => ipcRenderer.invoke("local:get-file-snapshot", absolutePath),
   searchWorkspace: (rootPath, query, requestId, limit) =>
     ipcRenderer.invoke("local:search-workspace", rootPath, query, requestId, limit),

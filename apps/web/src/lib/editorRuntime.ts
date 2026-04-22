@@ -34,6 +34,25 @@ export function createEmptyGroup(): EditorGroupState {
   return { id: createGroupId(), openTabs: [], activeTabId: null, previewTabId: null };
 }
 
+export function resolvePreviewTabId(input: {
+  asPreview: boolean;
+  existingPreviewTabId: string | null;
+  targetDocumentId: string;
+  documentAlreadyOpen: boolean;
+}) {
+  const { asPreview, existingPreviewTabId, targetDocumentId, documentAlreadyOpen } = input;
+
+  if (asPreview) {
+    if (!documentAlreadyOpen || existingPreviewTabId === targetDocumentId) {
+      return targetDocumentId;
+    }
+
+    return existingPreviewTabId;
+  }
+
+  return existingPreviewTabId === targetDocumentId ? null : existingPreviewTabId;
+}
+
 export function distributeEqualSizes(count: number): number[] {
   if (count <= 0) return [];
   const size = 100 / count;

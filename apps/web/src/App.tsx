@@ -1,23 +1,7 @@
-import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { FileText } from "lucide-react";
-
-const EditorSurface = lazy(() =>
-  import("./components/EditorSurface").then((module) => ({ default: module.EditorSurface }))
-);
-
-function EditorSurfacePlaceholder({ loading = false }: { loading?: boolean }) {
-  return (
-    <section className="editor-surface editor-surface--empty">
-      <div className="editor-empty">
-        <FileText size={32} className="editor-empty__icon" strokeWidth={1.4} />
-        <p className="editor-empty__title">{loading ? "Loading editor…" : "No file open"}</p>
-        {loading ? null : (
-          <p className="editor-empty__hint">Pick a file from the Explorer or search to start editing.</p>
-        )}
-      </div>
-    </section>
-  );
-}
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EditorGroup } from "./components/EditorGroup";
+import type { EditorGroupTabInfo } from "./components/EditorGroup";
+import { useStableCallback } from "./lib/useStableCallback";
 import {
   ActivityBar,
   FilesPanel,
@@ -28,7 +12,6 @@ import {
   SessionsPanel,
   SettingsPanel,
   StatusBar,
-  TabStrip,
   TitleBar,
   WorkspaceFileConflictDialog,
   WorkspaceErrorBanner,
@@ -36,11 +19,13 @@ import {
 } from "./components/Shell";
 import { db, loadSetting, loadWorkspaceSnapshot, persistSetting, persistWorkspaceSnapshot } from "./db";
 import {
+  buildTreeFromFiles,
   buildTreeFromSnapshots,
   createBrowserBundleDirectory,
   inflateElectronWorkspace,
   openBrowserBundleDirectory,
   openBrowserWorkspace,
+  pruneWorkspaceTreeForSkippedFolders,
   readBrowserJson,
   writeBrowserJson
 } from "./lib/localWorkspace";
@@ -69,6 +54,7 @@ import {
   mapFileIdToPath,
   mergeLayout,
   normalizeFile,
+  resolvePreviewTabId,
   searchLoadedBuffers,
   TabDragState,
   toNormalizedBufferMap,
@@ -97,7 +83,14 @@ import {
   overwriteSelections
 } from "./lib/session";
 import { applyResolvedTheme, getSystemThemePreference, resolveThemeMode } from "./lib/theme";
-import { sampleBuffers, sampleFiles, sampleRoot, sampleTree } from "./sampleWorkspace";
+import {
+  mergeSampleWorkspaceBuffers,
+  readSampleWorkspaceText,
+  sampleBuffers,
+  sampleFiles,
+  sampleRoot,
+  sampleTree
+} from "./sampleWorkspace";
 import type {
   ActivityId,
   BundleBootstrap,
@@ -270,6 +263,24 @@ function getWorkspaceBundleOpenStatus(
   return detail ? `Opened workspace bundle ${bundleName}. ${detail}` : `Opened workspace bundle ${bundleName}.`;
 }
 
+function logAppActivity(
+  type: "status" | "error" | "scan" | "tab" | "file" | "buffer",
+  message: string,
+  detail?: Record<string, unknown>
+) {
+  const timestamp = new Date().toISOString();
+  const payload =
+    detail && Object.keys(detail).length > 0
+      ? ` ${JSON.stringify(Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined)))}`
+      : "";
+
+  console.log(`[app:${type}] ${timestamp} ${message}${payload}`);
+}
+
+function isPathWithinSkippedFolder(targetPath: string, skippedFolders: string[]) {
+  return skippedFolders.some((folderPath) => targetPath === folderPath || targetPath.startsWith(`${folderPath}/`));
+}
+
 type BundleSaveOptions = {
   createBundleIfNeeded?: boolean;
   bundleOverride?: WorkspaceBundleLink;
@@ -328,7 +339,7 @@ export default function App() {
     deleted?: boolean;
     snapshot: WorkspaceFileSnapshot | null;
   } | null>(null);
-  const [statusMessage, setStatusMessage] = useState("Loaded sample workspace.");
+  const [statusMessage, setStatusMessage] = useState("Opening workspace...");
   const [scanProgress, setScanProgress] = useState<WorkspaceScanProgress | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -338,13 +349,20 @@ export default function App() {
   const [tabDrag, setTabDrag] = useState<TabDragState | null>(null);
   const [loadingBufferIds, setLoadingBufferIds] = useState<Set<string>>(() => new Set());
   const [pdfBlobEntries, setPdfBlobEntries] = useState<Record<string, { url: string; error?: string }>>({});
+  const [cacheBootstrapSettled, setCacheBootstrapSettled] = useState(false);
   const loadedPdfIdsRef = useRef<Set<string>>(new Set());
+  const cacheBootstrapRunRef = useRef(0);
+  const scanActiveRef = useRef(false);
   const fileMapRef = useRef(fileMap);
   fileMapRef.current = fileMap;
   const bufferMapRef = useRef(bufferMap);
   bufferMapRef.current = bufferMap;
   const editorGroupsRef = useRef(editorGroups);
   editorGroupsRef.current = editorGroups;
+  const activeGroupIdRef = useRef(activeGroupId);
+  activeGroupIdRef.current = activeGroupId;
+  const tabDragRef = useRef(tabDrag);
+  tabDragRef.current = tabDrag;
 
   const files = useMemo(() => Object.values(fileMap).sort((left, right) => left.path.localeCompare(right.path)), [fileMap]);
   const dirtyBuffers = useMemo(
@@ -364,6 +382,10 @@ export default function App() {
   const activeFile = activeTabId ? fileMap[activeTabId] ?? null : null;
   const activeBuffer = activeTabId ? bufferMap[activeTabId] ?? null : null;
   const activeDocument = composeTextDocument(activeFile, activeBuffer);
+  const activeFileRef = useRef(activeFile);
+  activeFileRef.current = activeFile;
+  const activeDocumentRef = useRef(activeDocument);
+  activeDocumentRef.current = activeDocument;
   const activePdfIds = useMemo(() => {
     const ids: string[] = [];
     for (const group of editorGroups) {
@@ -432,6 +454,48 @@ export default function App() {
       }),
     [themeMode, openTabs, activeTabId, layout, sidebarState, searchState, cursorState, bundleLink?.name, dirtyBuffers, fileMap]
   );
+
+  function getRuntimeLabel() {
+    return window.electronAPI ? "desktop" : "web";
+  }
+
+  function getDocumentLogDetail(
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "name" | "workspaceId"> | null | undefined,
+    detail: Record<string, unknown> = {}
+  ) {
+    return {
+      runtime: getRuntimeLabel(),
+      workspaceId: document?.workspaceId ?? workspace.id,
+      documentId: document?.id,
+      documentName: document?.name,
+      documentPath: document?.path,
+      ...detail
+    };
+  }
+
+  function logTabActivity(
+    message: string,
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "name" | "workspaceId"> | null | undefined,
+    detail: Record<string, unknown> = {}
+  ) {
+    logAppActivity("tab", message, getDocumentLogDetail(document, detail));
+  }
+
+  function logFileActivity(
+    message: string,
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "name" | "workspaceId"> | null | undefined,
+    detail: Record<string, unknown> = {}
+  ) {
+    logAppActivity("file", message, getDocumentLogDetail(document, detail));
+  }
+
+  function logBufferActivity(
+    message: string,
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "name" | "workspaceId"> | null | undefined,
+    detail: Record<string, unknown> = {}
+  ) {
+    logAppActivity("buffer", message, getDocumentLogDetail(document, detail));
+  }
 
   function clearWorkspaceAccess() {
     browserWorkspaceDirectoryHandleRef.current = null;
@@ -514,10 +578,15 @@ export default function App() {
     nextManifest?: WorkspaceManifest,
     nextBundleLink: WorkspaceBundleLink | null = null
   ) {
-    const nextFileMap = toNormalizedFileMap(nextFiles);
+    const skippedFolders = nextWorkspace.skippedFolders ?? [];
+    const filteredFiles = skippedFolders.length
+      ? nextFiles.filter((file) => !isPathWithinSkippedFolder(file.path, skippedFolders))
+      : nextFiles;
+    const filteredTree = buildTreeFromFiles(nextWorkspace, filteredFiles);
+    const nextFileMap = toNormalizedFileMap(filteredFiles);
     const nextBufferMap = toNormalizedBufferMap(nextBuffers.filter((buffer) => nextFileMap[buffer.documentId]));
     setWorkspace(nextWorkspace);
-    setTree(nextTree);
+    setTree(filteredTree);
     setFileMap(nextFileMap);
     setBufferMap(evictCleanBuffers(nextFileMap, nextBufferMap, getPinnedBufferIds(editorGroupsRef.current, nextBufferMap)));
     setBundleLink(nextBundleLink);
@@ -537,11 +606,11 @@ export default function App() {
       const filteredTabs = hydratedSession.openTabs;
       const restoredTabs = filteredTabs.length
         ? filteredTabs
-        : ([getFirstFileId(nextFiles)].filter(Boolean) as string[]);
+        : ([getFirstFileId(filteredFiles)].filter(Boolean) as string[]);
       const restoredActive =
         hydratedSession.activeTabId && nextFileMap[hydratedSession.activeTabId]
           ? hydratedSession.activeTabId
-          : filteredTabs[0] ?? getFirstFileId(nextFiles);
+          : filteredTabs[0] ?? getFirstFileId(filteredFiles);
       replaceAllGroupsWithSingle(restoredTabs, restoredActive);
       setLayout(mergeLayout(ownSession.layout, defaultLayout, searchAvailable));
       setSidebarState(ownSession.sidebarState);
@@ -557,40 +626,124 @@ export default function App() {
     }
   }
 
-  async function bootstrapFromCache() {
-    const [storedTheme, lastWorkspaceSetting] = await Promise.all([
-      loadSetting("theme-mode"),
-      loadSetting("last-workspace-id")
-    ]);
+  async function bootstrapFromCache(isStale: () => boolean) {
+    try {
+      const [storedTheme, lastWorkspaceSetting] = await Promise.all([
+        loadSetting("theme-mode"),
+        loadSetting("last-workspace-id")
+      ]);
 
-    if (storedTheme) {
-      setThemeMode(storedTheme.value as ThemeMode);
+      if (isStale()) {
+        return;
+      }
+
+      if (storedTheme) {
+        setThemeMode(storedTheme.value as ThemeMode);
+      }
+
+      if (!lastWorkspaceSetting) {
+        setStatusMessage("Loaded sample workspace.");
+        return;
+      }
+
+      const snapshot = await loadWorkspaceSnapshot(lastWorkspaceSetting.value);
+
+      if (isStale()) {
+        return;
+      }
+
+      if (!snapshot.workspace) {
+        setStatusMessage("Loaded sample workspace.");
+        return;
+      }
+
+      if (window.electronAPI && snapshot.workspace.root.rootPath) {
+        const restoredAccess = await window.electronAPI.restoreWorkspaceAccess(snapshot.workspace.root.rootPath);
+        if (isStale()) {
+          return;
+        }
+
+        if (!restoredAccess) {
+          setWorkspaceError("Reopen the workspace folder to restore desktop filesystem access.");
+        }
+      }
+
+      const restoredBuffers =
+        snapshot.workspace.root.id === sampleRoot.id ? mergeSampleWorkspaceBuffers(snapshot.buffers) : snapshot.buffers;
+
+      hydrateWorkspace(
+        snapshot.workspace.root,
+        snapshot.workspace.tree,
+        snapshot.files,
+        restoredBuffers,
+        snapshot.workspace.manifest,
+        snapshot.workspace.bundle ?? null
+      );
+      setStatusMessage(`Restored cached workspace: ${snapshot.workspace.root.displayName}`);
+    } catch {
+      if (!isStale()) {
+        setStatusMessage("Loaded sample workspace.");
+      }
     }
-
-    if (!lastWorkspaceSetting) {
-      return;
-    }
-
-    const snapshot = await loadWorkspaceSnapshot(lastWorkspaceSetting.value);
-
-    if (!snapshot.workspace) {
-      return;
-    }
-
-    hydrateWorkspace(
-      snapshot.workspace.root,
-      snapshot.workspace.tree,
-      snapshot.files,
-      snapshot.buffers,
-      snapshot.workspace.manifest,
-      snapshot.workspace.bundle ?? null
-    );
-    setStatusMessage(`Restored cached workspace: ${snapshot.workspace.root.displayName}`);
   }
 
   useEffect(() => {
-    void bootstrapFromCache();
+    let disposed = false;
+    const runId = ++cacheBootstrapRunRef.current;
+    const isStale = () => disposed || cacheBootstrapRunRef.current !== runId;
+
+    void bootstrapFromCache(isStale).finally(() => {
+      if (!isStale()) {
+        setCacheBootstrapSettled(true);
+      }
+    });
+
+    return () => {
+      disposed = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!cacheBootstrapSettled) {
+      return;
+    }
+
+    logAppActivity("status", statusMessage, {
+      runtime: window.electronAPI ? "desktop" : "web",
+      workspaceId: workspace.id
+    });
+  }, [cacheBootstrapSettled, statusMessage, workspace.id]);
+
+  useEffect(() => {
+    if (!workspaceError) {
+      return;
+    }
+
+    logAppActivity("error", workspaceError, {
+      runtime: window.electronAPI ? "desktop" : "web",
+      workspaceId: workspace.id
+    });
+  }, [workspaceError, workspace.id]);
+
+  useEffect(() => {
+    if (scanProgress && !scanActiveRef.current) {
+      scanActiveRef.current = true;
+      logAppActivity("scan", "Workspace scan started.", {
+        runtime: window.electronAPI ? "desktop" : "web",
+        workspaceId: workspace.id,
+        source: scanProgress.source
+      });
+      return;
+    }
+
+    if (!scanProgress && scanActiveRef.current) {
+      scanActiveRef.current = false;
+      logAppActivity("scan", "Workspace scan finished.", {
+        runtime: window.electronAPI ? "desktop" : "web",
+        workspaceId: workspace.id
+      });
+    }
+  }, [scanProgress, workspace.id]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -609,6 +762,10 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    if (!cacheBootstrapSettled) {
+      return;
+    }
+
     void persistSetting("last-workspace-id", workspace.id);
     const timer = window.setTimeout(() => {
       void persistWorkspaceSnapshot(
@@ -629,7 +786,7 @@ export default function App() {
     }, 350);
 
     return () => window.clearTimeout(timer);
-  }, [workspaceSnapshotSignature, workspace, tree, manifest, bundleLink, files, dirtyBuffers]);
+  }, [cacheBootstrapSettled, workspaceSnapshotSignature, workspace, tree, manifest, bundleLink, files, dirtyBuffers]);
 
   useEffect(() => {
     if (workspace.id === sampleRoot.id || !bundleRuntimeReady) {
@@ -662,13 +819,13 @@ export default function App() {
 
       if (document.visibilityState === "visible") {
         void pollRemoteManifest();
-        void pollWorkspaceChanges();
+        void pollWorkspaceChanges("bundle-visibility");
       }
     };
 
     const handleFocus = () => {
       void pollRemoteManifest();
-      void pollWorkspaceChanges();
+      void pollWorkspaceChanges("bundle-focus");
     };
 
     window.addEventListener("visibilitychange", handleVisibilityChange);
@@ -691,7 +848,7 @@ export default function App() {
     }
 
     const interval = window.setInterval(() => {
-      void pollWorkspaceChanges();
+      void pollWorkspaceChanges("interval");
     }, 30000);
 
     return () => {
@@ -709,12 +866,12 @@ export default function App() {
     }
 
     const handleFocus = () => {
-      void pollWorkspaceChanges();
+      void pollWorkspaceChanges("focus");
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void pollWorkspaceChanges();
+        void pollWorkspaceChanges("visibility");
       }
     };
 
@@ -941,6 +1098,7 @@ export default function App() {
       signal: AbortSignal;
       registerElectronScan: () => string;
       shouldSkipFolder: (folderPath: string) => boolean;
+      getSkippedFolders: () => string[];
     }) => Promise<T>
   ): Promise<T> {
     setWorkspaceError(null);
@@ -1068,6 +1226,11 @@ export default function App() {
       }
 
       skippedFolders.add(folderPath);
+      logAppActivity("scan", "Skipped folder during workspace scan.", {
+        runtime: window.electronAPI ? "desktop" : "web",
+        folderName: folderPath.split("/").at(-1) ?? folderPath,
+        folderPath
+      });
 
       if (window.electronAPI && activeElectronScanId) {
         void window.electronAPI.skipOpenDirectoryFolder(activeElectronScanId, folderPath).catch(() => {});
@@ -1152,6 +1315,8 @@ export default function App() {
       return scanId;
     };
 
+    const getSkippedFolders = () => [...skippedFolders].sort();
+
     scanCancelRef.current = requestCancel;
     scanSkipFolderRef.current = requestSkipFolder;
 
@@ -1160,7 +1325,8 @@ export default function App() {
         onBrowserProgress,
         signal: abortController.signal,
         registerElectronScan,
-        shouldSkipFolder
+        shouldSkipFolder,
+        getSkippedFolders
       });
     } finally {
       if (showTimer !== null) {
@@ -1184,7 +1350,7 @@ export default function App() {
 
   async function handleOpenLocalWorkspace() {
     try {
-      await trackWorkspaceScan(async ({ onBrowserProgress, signal, registerElectronScan, shouldSkipFolder }) => {
+      await trackWorkspaceScan(async ({ onBrowserProgress, signal, registerElectronScan, shouldSkipFolder, getSkippedFolders }) => {
         if (window.electronAPI) {
           const result = await window.electronAPI.openDirectory(registerElectronScan());
 
@@ -1213,7 +1379,14 @@ export default function App() {
         clearBundleAccess();
         browserWorkspaceDirectoryHandleRef.current = browserWorkspace.directoryHandle;
         browserWorkspaceFileHandlesRef.current = browserWorkspace.fileHandles;
-        hydrateWorkspace(browserWorkspace.root, browserWorkspace.tree, browserWorkspace.files);
+        hydrateWorkspace(
+          {
+            ...browserWorkspace.root,
+            skippedFolders: getSkippedFolders()
+          },
+          browserWorkspace.tree,
+          browserWorkspace.files
+        );
         setStatusMessage(
           getWorkspaceOpenStatus({
             displayName: browserWorkspace.root.displayName,
@@ -1230,7 +1403,7 @@ export default function App() {
 
   async function handleOpenWorkspaceBundle() {
     try {
-      await trackWorkspaceScan(async ({ onBrowserProgress, signal, registerElectronScan, shouldSkipFolder }) => {
+      await trackWorkspaceScan(async ({ onBrowserProgress, signal, registerElectronScan, shouldSkipFolder, getSkippedFolders }) => {
         if (window.electronAPI) {
           const selection = await window.electronAPI.openBundleDirectory();
 
@@ -1341,7 +1514,10 @@ export default function App() {
         };
 
         hydrateWorkspace(
-          browserWorkspace.root,
+          {
+            ...browserWorkspace.root,
+            skippedFolders: getSkippedFolders()
+          },
           browserWorkspace.tree,
           browserWorkspace.files,
           [],
@@ -1363,21 +1539,30 @@ export default function App() {
 
   function applyBufferPolicy(
     nextBufferMap: Record<string, DocumentBuffer>,
-    forceEvictIds: string[] = []
+    forceEvictIds: string[] = [],
+    reason = "buffer-policy"
   ) {
-    return evictCleanBuffers(
+    const next = evictCleanBuffers(
       fileMapRef.current,
       nextBufferMap,
       getPinnedBufferIds(editorGroupsRef.current, nextBufferMap),
       forceEvictIds
     );
+
+    const evictedIds = Object.keys(nextBufferMap).filter((documentId) => !next[documentId]);
+    for (const documentId of evictedIds) {
+      const file = fileMapRef.current[documentId];
+      logBufferActivity("Removed buffer from memory cache.", file, { reason });
+    }
+
+    return next;
   }
 
-  function evictBufferIfClean(documentId: string) {
-    setBufferMap((previous) => applyBufferPolicy(previous, [documentId]));
+  function evictBufferIfClean(documentId: string, reason = "explicit-evict") {
+    setBufferMap((previous) => applyBufferPolicy(previous, [documentId], reason));
   }
 
-  async function ensureBuffer(documentId: string): Promise<DocumentBuffer | null> {
+  async function ensureBuffer(documentId: string, reason = "buffer-load"): Promise<DocumentBuffer | null> {
     const file = fileMapRef.current[documentId];
     if (!file || file.isPdf) {
       return null;
@@ -1386,12 +1571,13 @@ export default function App() {
     const existing = bufferMapRef.current[documentId];
     if (existing) {
       const touched = touchBuffer(existing);
+      logBufferActivity("Buffer cache hit.", file, { reason, cachedLength: existing.cachedBody.length });
       if (touched.lastAccessedAt !== existing.lastAccessedAt) {
         setBufferMap((previous) =>
           applyBufferPolicy({
             ...previous,
             [documentId]: touched
-          })
+          }, [], "buffer-touch")
         );
       }
       return touched;
@@ -1415,13 +1601,17 @@ export default function App() {
           return null;
         }
 
-        const body = await readWorkspaceDocumentBody(latestFile);
+        const body = await readWorkspaceDocumentBody(latestFile, reason);
         const nextBuffer = createBufferFromBody(latestFile, body);
+        logBufferActivity("Loaded buffer into memory cache.", latestFile, {
+          reason,
+          cachedLength: body.length
+        });
         setBufferMap((previous) =>
           applyBufferPolicy({
             ...previous,
             [documentId]: nextBuffer
-          })
+          }, [], "buffer-load")
         );
         return nextBuffer;
       } finally {
@@ -1482,9 +1672,18 @@ export default function App() {
   ) {
     const asPreview = options.preview ?? true;
     const targetGroupId = options.groupId ?? activeGroupId;
-    const existingTargetGroup = editorGroupsRef.current.find((group) => group.id === targetGroupId);
+    const resolvedTargetGroupId = editorGroupsRef.current.find((group) => group.id === targetGroupId)?.id ?? editorGroupsRef.current[0]?.id ?? targetGroupId;
+    const existingTargetGroup = editorGroupsRef.current.find((group) => group.id === resolvedTargetGroupId);
+    const file = fileMap[documentId];
+    const willCreateTab = !existingTargetGroup?.openTabs.includes(documentId);
+    const nextPreviewTabId = resolvePreviewTabId({
+      asPreview,
+      existingPreviewTabId: existingTargetGroup?.previewTabId ?? null,
+      targetDocumentId: documentId,
+      documentAlreadyOpen: !willCreateTab
+    });
     const replacedPreviewId =
-      asPreview &&
+      nextPreviewTabId === documentId &&
       existingTargetGroup?.previewTabId &&
       existingTargetGroup.previewTabId !== documentId &&
       existingTargetGroup.openTabs.includes(existingTargetGroup.previewTabId)
@@ -1493,7 +1692,7 @@ export default function App() {
 
     setEditorGroups((groups) =>
       groups.map((group) => {
-        if (group.id !== targetGroupId) return group;
+        if (group.id !== resolvedTargetGroupId) return group;
         let nextTabs = group.openTabs;
         let nextPreview = group.previewTabId;
         if (!nextTabs.includes(documentId)) {
@@ -1503,32 +1702,40 @@ export default function App() {
             nextTabs = [...nextTabs, documentId];
           }
         }
-        if (asPreview) {
-          nextPreview = documentId;
-        } else if (nextPreview === documentId) {
-          nextPreview = null;
-        }
+        nextPreview = nextPreviewTabId;
         return { ...group, openTabs: nextTabs, previewTabId: nextPreview, activeTabId: documentId };
       })
     );
-    setActiveGroupId(targetGroupId);
+    setActiveGroupId(resolvedTargetGroupId);
+
+    if (willCreateTab && file) {
+      logTabActivity("Created tab.", file, {
+        groupId: resolvedTargetGroupId,
+        mode: asPreview ? "preview" : "pinned"
+      });
+    }
 
     if (replacedPreviewId) {
+      const replacedPreviewFile = fileMapRef.current[replacedPreviewId];
+      logTabActivity("Replaced preview tab.", replacedPreviewFile, {
+        groupId: resolvedTargetGroupId,
+        nextDocumentId: documentId,
+        nextDocumentPath: file?.path
+      });
       const openElsewhere = editorGroupsRef.current.some(
-        (group) => group.id !== targetGroupId && group.openTabs.includes(replacedPreviewId)
+        (group) => group.id !== resolvedTargetGroupId && group.openTabs.includes(replacedPreviewId)
       );
       if (!openElsewhere) {
-        evictBufferIfClean(replacedPreviewId);
+        evictBufferIfClean(replacedPreviewId, "preview-replaced");
       }
     }
 
-    const file = fileMap[documentId];
     if (!file) {
       return;
     }
 
     if (!file.isPdf) {
-      void ensureBuffer(documentId);
+      void ensureBuffer(documentId, willCreateTab ? "tab-open" : "tab-focus");
     }
 
     if (file.conflictState === "disk-changed") {
@@ -1543,9 +1750,13 @@ export default function App() {
 
   function handlePromoteTab(documentId: string, groupId?: string) {
     const targetGroupId = groupId ?? activeGroupId;
+    const resolvedTargetGroupId = editorGroupsRef.current.find((group) => group.id === targetGroupId)?.id ?? editorGroupsRef.current[0]?.id ?? targetGroupId;
+    const existingTargetGroup = editorGroupsRef.current.find((group) => group.id === resolvedTargetGroupId);
+    const file = fileMap[documentId];
+    const willCreateTab = !existingTargetGroup?.openTabs.includes(documentId);
     setEditorGroups((groups) =>
       groups.map((group) => {
-        if (group.id !== targetGroupId) return group;
+        if (group.id !== resolvedTargetGroupId) return group;
         const nextTabs = group.openTabs.includes(documentId) ? group.openTabs : [...group.openTabs, documentId];
         return {
           ...group,
@@ -1555,10 +1766,14 @@ export default function App() {
         };
       })
     );
-    setActiveGroupId(targetGroupId);
-    const file = fileMap[documentId];
+    setActiveGroupId(resolvedTargetGroupId);
+    if (file) {
+      logTabActivity(willCreateTab ? "Created pinned tab." : "Promoted tab.", file, {
+        groupId: resolvedTargetGroupId
+      });
+    }
     if (file && !file.isPdf) {
-      void ensureBuffer(documentId);
+      void ensureBuffer(documentId, willCreateTab ? "tab-promote-create" : "tab-promote");
     }
   }
 
@@ -1579,6 +1794,7 @@ export default function App() {
 
   function handleCloseTab(documentId: string, groupId?: string) {
     const targetGroupId = groupId ?? activeGroupId;
+    const file = fileMapRef.current[documentId];
     const openElsewhere = editorGroupsRef.current.some(
       (group) => group.id !== targetGroupId && group.openTabs.includes(documentId)
     );
@@ -1607,6 +1823,7 @@ export default function App() {
       }
       return next;
     });
+    logTabActivity("Closed tab.", file, { groupId: targetGroupId, reason: "user-close" });
     if (removedGroupIndex !== -1) {
       setGroupSizes((sizes) => {
         if (sizes.length <= 1) return sizes;
@@ -1623,7 +1840,7 @@ export default function App() {
       });
     }
     if (!openElsewhere) {
-      evictBufferIfClean(documentId);
+      evictBufferIfClean(documentId, "tab-closed");
     }
   }
 
@@ -1634,6 +1851,8 @@ export default function App() {
 
     const documentId = activeFile.id;
     const groupId = activeGroupId;
+    const previousBody = bufferMapRef.current[documentId]?.cachedBody ?? "";
+    const delta = nextValue.length - previousBody.length;
     const updatedAt = new Date().toISOString();
     setEditorGroups((groups) =>
       groups.map((group) =>
@@ -1642,6 +1861,19 @@ export default function App() {
           : group
       )
     );
+
+    if (nextValue !== previousBody) {
+      logFileActivity(
+        delta > 0 ? "Added content to document." : delta < 0 ? "Removed content from document." : "Updated document content.",
+        activeFile,
+        {
+          groupId,
+          previousLength: previousBody.length,
+          nextLength: nextValue.length,
+          deltaChars: delta
+        }
+      );
+    }
 
     setBufferMap((previous) =>
       applyBufferPolicy({
@@ -1656,7 +1888,7 @@ export default function App() {
           lastAccessedAt: Date.now(),
           persistedLocal: true
         }
-      })
+      }, [], "document-edit")
     );
     setFileMap((previous) => ({
       ...previous,
@@ -1709,6 +1941,20 @@ export default function App() {
   }
 
   function filterGroupsByDocumentPredicate(predicate: (documentId: string) => boolean) {
+    const removedOpenTabs = new Set<string>();
+    for (const group of editorGroupsRef.current) {
+      for (const documentId of group.openTabs) {
+        if (!predicate(documentId)) {
+          removedOpenTabs.add(documentId);
+        }
+      }
+    }
+
+    for (const documentId of removedOpenTabs) {
+      const file = fileMapRef.current[documentId];
+      logTabActivity("Closed tab.", file, { reason: "document-filtered" });
+    }
+
     setEditorGroups((groups) => {
       const next = groups.map((group) => {
         const openTabs = group.openTabs.filter(predicate);
@@ -1743,7 +1989,7 @@ export default function App() {
     );
     const file = fileMap[documentId];
     if (file && !file.isPdf) {
-      void ensureBuffer(documentId);
+      void ensureBuffer(documentId, makeActive ? "add-tab-active" : "add-tab-background");
     }
   }
 
@@ -1882,15 +2128,42 @@ export default function App() {
     });
   }
 
-  async function readWorkspaceDocumentBody(document: Pick<WorkspaceFileRecord, "path" | "absolutePath">) {
-    return providerRegistry.local.readText(document);
+  async function readWorkspaceDocumentBody(
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "absolutePath" | "name" | "workspaceId">,
+    reason = "workspace-read"
+  ) {
+    if (workspace.id === sampleRoot.id) {
+      const body = readSampleWorkspaceText(document.path);
+      logFileActivity("Read file from workspace.", document, {
+        reason,
+        source: "sample",
+        contentLength: body.length
+      });
+      return body;
+    }
+
+    const body = await providerRegistry.local.readText(document);
+    logFileActivity("Read file from workspace.", document, {
+      reason,
+      source: window.electronAPI ? "disk" : "browser-handle",
+      contentLength: body.length
+    });
+    return body;
   }
 
   async function readWorkspaceDocumentBlob(
-    document: Pick<WorkspaceFileRecord, "path" | "absolutePath">,
-    mimeType = "application/octet-stream"
+    document: Pick<WorkspaceFileRecord, "id" | "path" | "absolutePath" | "name" | "workspaceId">,
+    mimeType = "application/octet-stream",
+    reason = "workspace-read-blob"
   ): Promise<Blob> {
-    return providerRegistry.local.readBlob(document, mimeType);
+    const blob = await providerRegistry.local.readBlob(document, mimeType);
+    logFileActivity("Read binary file from workspace.", document, {
+      reason,
+      mimeType,
+      blobSize: blob.size,
+      source: window.electronAPI ? "disk" : "browser-handle"
+    });
+    return blob;
   }
 
   async function getWorkspaceDocumentSnapshot(document: Pick<WorkspaceFileRecord, "path" | "absolutePath">) {
@@ -1908,9 +2181,12 @@ export default function App() {
     if (latestSnapshot) {
       try {
         remoteBody = await readWorkspaceDocumentBody({
+          id: file.id,
+          name: file.name,
           path: file.path,
-          absolutePath: latestSnapshot.absolutePath ?? file.absolutePath
-        });
+          absolutePath: latestSnapshot.absolutePath ?? file.absolutePath,
+          workspaceId: file.workspaceId
+        }, "disk-conflict-read");
       } catch {
         remoteBody = "";
       }
@@ -1938,7 +2214,7 @@ export default function App() {
             dirty: true,
             persistedLocal: true
           })
-        })
+        }, [], "disk-conflict-buffer")
       );
     }
   }
@@ -1991,7 +2267,7 @@ export default function App() {
       return;
     }
 
-    const loadedBuffer = activeBuffer ?? (await ensureBuffer(activeFile.id));
+    const loadedBuffer = activeBuffer ?? (await ensureBuffer(activeFile.id, "save-active-document"));
     if (!loadedBuffer) {
       setStatusMessage(`Unable to load ${activeFile.name}.`);
       return;
@@ -2006,7 +2282,7 @@ export default function App() {
             ...loadedBuffer,
             dirty: false
           }
-        })
+        }, [], "sample-save")
       );
       setFileMap((previous) => ({
         ...previous,
@@ -2073,7 +2349,7 @@ export default function App() {
             lastAccessedAt: Date.now(),
             persistedLocal: false
           }
-        })
+        }, [], "save-write")
       );
 
       setStatusMessage(`Saved ${targetFile.name}`);
@@ -2082,7 +2358,7 @@ export default function App() {
     }
   }
 
-  async function pollWorkspaceChanges() {
+  async function pollWorkspaceChanges(trigger = "auto") {
     if (workspace.id === sampleRoot.id || workspacePollInFlightRef.current) {
       return false;
     }
@@ -2092,34 +2368,65 @@ export default function App() {
     }
 
     workspacePollInFlightRef.current = true;
+    const startedAt = performance.now();
+    let didChange = false;
+    let snapshotCount = 0;
+    let retriedAccessRestore = false;
+    logAppActivity("scan", "Workspace poll started.", {
+      runtime: getRuntimeLabel(),
+      workspaceId: workspace.id,
+      displayName: workspace.displayName,
+      trigger
+    });
 
     try {
-      const snapshots = await providerRegistry.local.scanWorkspace(workspace.rootPath);
+      const skippedFolders = workspace.skippedFolders ?? [];
+      let snapshots = await providerRegistry.local.scanWorkspace(workspace.rootPath, skippedFolders);
+      const workspaceFiles = Object.values(fileMapRef.current).filter((file) => !file.id.startsWith("copy:"));
+
+      if (
+        window.electronAPI &&
+        workspace.rootPath &&
+        snapshots.length === 0 &&
+        workspaceFiles.length > 0 &&
+        (await window.electronAPI.restoreWorkspaceAccess(workspace.rootPath))
+      ) {
+        retriedAccessRestore = true;
+        snapshots = await providerRegistry.local.scanWorkspace(workspace.rootPath, skippedFolders);
+      }
+      snapshotCount = snapshots.length;
+
       const snapshotByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]));
       const visibleFileIds = new Set(editorGroupsRef.current.map((group) => group.activeTabId).filter((value): value is string => Boolean(value)));
-      const workspaceFiles = Object.values(fileMapRef.current).filter((file) => !file.id.startsWith("copy:"));
       const currentByPath = new Map(workspaceFiles.map((file) => [file.path, file]));
       const nextFileMap: Record<string, WorkspaceFileRecord> = { ...fileMapRef.current };
       const nextBufferMap: Record<string, DocumentBuffer> = { ...bufferMapRef.current };
-      let didChange = false;
-
+      const addedPaths: string[] = [];
+      const updatedPaths: string[] = [];
+      const removedPaths: string[] = [];
+      const conflictPaths: string[] = [];
       for (const file of workspaceFiles) {
         const snapshot = snapshotByPath.get(file.path);
         const buffer = nextBufferMap[file.id];
 
         if (!snapshot) {
+          removedPaths.push(file.path);
           if (buffer?.dirty) {
             nextFileMap[file.id] = {
               ...file,
               conflictState: "disk-changed",
               unavailable: true
             };
+            conflictPaths.push(file.path);
             if (!diskConflict || diskConflict.documentId !== file.id) {
               await queueDiskConflict(file, null, buffer.cachedBody);
             }
           } else {
             delete nextFileMap[file.id];
             delete nextBufferMap[file.id];
+            if (buffer) {
+              logBufferActivity("Removed buffer from memory cache.", file, { reason: "workspace-file-removed" });
+            }
           }
 
           didChange = true;
@@ -2140,6 +2447,7 @@ export default function App() {
             conflictState: "disk-changed",
             unavailable: false
           };
+          conflictPaths.push(file.path);
           if (!diskConflict || diskConflict.documentId !== file.id) {
             await queueDiskConflict(file, snapshot, buffer.cachedBody);
           }
@@ -2157,19 +2465,18 @@ export default function App() {
           conflictState: undefined,
           unavailable: false
         };
+        updatedPaths.push(file.path);
 
         if (visibleFileIds.has(file.id) && !file.isPdf) {
           try {
-            const body = await readWorkspaceDocumentBody({
-              path: file.path,
-              absolutePath: snapshot.absolutePath ?? file.absolutePath
-            });
+            const body = await readWorkspaceDocumentBody(nextFileMap[file.id], "workspace-poll-refresh");
             nextBufferMap[file.id] = createBufferFromBody(nextFileMap[file.id], body);
           } catch {
             // Keep metadata fresh even if the body cannot be reloaded yet.
           }
         } else if (buffer && !buffer.dirty) {
           delete nextBufferMap[file.id];
+          logBufferActivity("Removed buffer from memory cache.", file, { reason: "workspace-poll-refresh" });
         }
 
         didChange = true;
@@ -2201,12 +2508,28 @@ export default function App() {
           isPdf: pdf,
           unavailable: false
         });
+        addedPaths.push(snapshot.path);
         didChange = true;
       }
 
       if (!didChange) {
         return false;
       }
+
+      logAppActivity("scan", "Workspace change summary.", {
+        runtime: window.electronAPI ? "desktop" : "web",
+        workspaceId: workspace.id,
+        displayName: workspace.displayName,
+        skippedFolders,
+        addedCount: addedPaths.length,
+        updatedCount: updatedPaths.length,
+        removedCount: removedPaths.length,
+        conflictCount: conflictPaths.length,
+        addedPaths: addedPaths.slice(0, 5),
+        updatedPaths: updatedPaths.slice(0, 5),
+        removedPaths: removedPaths.slice(0, 5),
+        conflictPaths: conflictPaths.slice(0, 5)
+      });
 
       setFileMap(nextFileMap);
       setBufferMap(applyBufferPolicy(nextBufferMap));
@@ -2216,6 +2539,16 @@ export default function App() {
       return true;
     } finally {
       workspacePollInFlightRef.current = false;
+      logAppActivity("scan", "Workspace poll finished.", {
+        runtime: getRuntimeLabel(),
+        workspaceId: workspace.id,
+        displayName: workspace.displayName,
+        trigger,
+        changed: didChange,
+        snapshotCount,
+        retriedAccessRestore,
+        durationMs: Math.round(performance.now() - startedAt)
+      });
     }
   }
 
@@ -3148,6 +3481,39 @@ export default function App() {
     ? undefined
     : ["files", "sessions", "providers", "settings"];
 
+  // Stable handler identities for hot children (EditorGroup / TabStrip / TreeRow).
+  // Each wraps the latest implementation via a ref so that the function reference
+  // stays stable across renders, letting React.memo short-circuit re-renders.
+  const stableGetDocument = useStableCallback((id: string): EditorGroupTabInfo | undefined => {
+    const file = fileMapRef.current[id];
+    if (!file) return undefined;
+    const buffer = bufferMapRef.current[id];
+    return {
+      id: file.id,
+      name: file.name,
+      dirty: Boolean(buffer?.dirty),
+      pendingDraftCount: file.pendingForeignDraftCount
+    };
+  });
+  const stableActivateTab = useStableCallback((documentId: string, groupId: string) =>
+    handleActivateFile(documentId, { preview: false, groupId })
+  );
+  const stablePromoteTab = useStableCallback((documentId: string, groupId: string) =>
+    handlePromoteTab(documentId, groupId)
+  );
+  const stableCloseTab = useStableCallback((documentId: string, groupId: string) =>
+    handleCloseTab(documentId, groupId)
+  );
+  const stableTabDragStart = useStableCallback(handleTabDragStart);
+  const stableTabDragOver = useStableCallback(handleTabDragOver);
+  const stableTabDrop = useStableCallback(handleTabDrop);
+  const stableTabDragEnd = useStableCallback(handleTabDragEnd);
+  const stableSplitRight = useStableCallback(handleSplitRight);
+  const stableFocusGroup = useStableCallback(handleFocusGroup);
+  const stableUpdateDocument = useStableCallback(handleUpdateDocument);
+  const stableCursorChange = useStableCallback(handleCursorChange);
+  const stableStartResize = useStableCallback((groupIndex: number) => setResizingGroupIndex(groupIndex));
+
   function renderSidebarPanel() {
     switch (layout.activeActivity) {
       case "files":
@@ -3218,6 +3584,23 @@ export default function App() {
     }
   }
 
+  if (!cacheBootstrapSettled) {
+    return (
+      <div className="app-shell">
+        <div className="app-boot">
+          <div className="app-boot__panel">
+            <div className="app-boot__brand">
+              <span className="app-boot__mark">T</span>
+              <span className="app-boot__name">vsText</span>
+            </div>
+            <p className="app-boot__title">Opening workspace...</p>
+            <p className="app-boot__hint">Restoring your last session.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <TitleBar
@@ -3285,113 +3668,58 @@ export default function App() {
             const isDropTargetGroup = tabDrag?.overGroupId === group.id;
             const needsEditor = groupFile !== null || showMergeReview;
             const showLoadingEditor = Boolean(groupFile && !groupFile.isPdf && !groupBuffer);
+            const pdfEntry = groupDocument?.isPdf ? pdfBlobEntries[groupDocument.id] : undefined;
+            const mergeReviewData =
+              showMergeReview && groupFile && activeDraftMergeEntry
+                ? {
+                    documentName: groupFile.name,
+                    currentIndex: activeDraftMerge?.currentIndex ?? 0,
+                    totalCount: activeDraftMerge?.entries.length ?? 0,
+                    remoteDeviceName: activeDraftMergeEntry.deviceName,
+                    remoteUpdatedAt: activeDraftMergeEntry.savedAt,
+                    remoteBody: activeDraftMergeEntry.body,
+                    onNextDraft: () => void handleNextDraft(),
+                    onUseDraftAsBase: handleUseDraftAsBase,
+                    onSaveDraftCopy: handleSaveDraftCopy,
+                    onSkipFile: handleSkipDraftFile
+                  }
+                : null;
             return (
-              <Fragment key={group.id}>
-                <div
-                  className={`editor-group ${isActiveGroup ? "editor-group--active" : ""} ${
-                    isDropTargetGroup ? "editor-group--drop-target" : ""
-                  }`}
-                  style={{ flexBasis: `${basis}%` }}
-                  onMouseDownCapture={() => handleFocusGroup(group.id)}
-                >
-                  <TabStrip
-                    groupId={group.id}
-                    openTabs={group.openTabs}
-                    activeTabId={group.activeTabId}
-                    previewTabId={group.previewTabId}
-                    tabDrag={tabDrag}
-                    getDocument={(id) => {
-                      const file = fileMap[id];
-                      const buffer = bufferMap[id];
-                      return file
-                        ? {
-                            id: file.id,
-                            name: file.name,
-                            dirty: Boolean(buffer?.dirty),
-                            pendingDraftCount: file.pendingForeignDraftCount
-                          }
-                        : undefined;
-                    }}
-                    onActivate={(id) => handleActivateFile(id, { preview: false, groupId: group.id })}
-                    onPromote={(id) => handlePromoteTab(id, group.id)}
-                    onClose={(id) => handleCloseTab(id, group.id)}
-                    onTabDragStart={(documentId) => handleTabDragStart(group.id, documentId)}
-                    onTabDragOver={(overTabId, before) => handleTabDragOver(group.id, overTabId, before)}
-                    onTabDrop={(anchorTabId, before) => handleTabDrop(group.id, anchorTabId, before)}
-                    onTabDragEnd={handleTabDragEnd}
-                    onSplitRight={group.openTabs.length > 0 ? () => handleSplitRight(group.id) : undefined}
-                  />
-                  <div
-                    className="editor-group__surface"
-                    onDragOver={(event) => {
-                      if (!tabDrag) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      handleTabDragOver(group.id, null, false);
-                    }}
-                    onDrop={(event) => {
-                      if (!tabDrag) return;
-                      event.preventDefault();
-                      handleTabDrop(group.id, null, false);
-                    }}
-                  >
-                    {needsEditor ? (
-                      showLoadingEditor ? (
-                        <EditorSurfacePlaceholder loading={loadingBufferIds.has(groupFile!.id)} />
-                      ) : (
-                        <Suspense fallback={<EditorSurfacePlaceholder loading />}>
-                          <EditorSurface
-                            document={groupDocument}
-                            resolvedTheme={resolvedTheme}
-                            previewOpen={layout.previewOpen}
-                            onChange={handleUpdateDocument}
-                            onCursorChange={handleCursorChange}
-                            pdf={
-                              groupDocument?.isPdf
-                                ? {
-                                    url: pdfBlobEntries[groupDocument.id]?.url ?? null,
-                                    error: pdfBlobEntries[groupDocument.id]?.error ?? null
-                                  }
-                                : undefined
-                            }
-                            mergeReview={
-                              showMergeReview
-                                ? {
-                                    documentName: groupFile!.name,
-                                    currentIndex: activeDraftMerge?.currentIndex ?? 0,
-                                    totalCount: activeDraftMerge?.entries.length ?? 0,
-                                    remoteDeviceName: activeDraftMergeEntry!.deviceName,
-                                    remoteUpdatedAt: activeDraftMergeEntry!.savedAt,
-                                    remoteBody: activeDraftMergeEntry!.body,
-                                    onNextDraft: () => void handleNextDraft(),
-                                    onUseDraftAsBase: handleUseDraftAsBase,
-                                    onSaveDraftCopy: handleSaveDraftCopy,
-                                    onSkipFile: handleSkipDraftFile
-                                  }
-                                : null
-                            }
-                          />
-                        </Suspense>
-                      )
-                    ) : (
-                      <EditorSurfacePlaceholder />
-                    )}
-                  </div>
-                </div>
-                {index < editorGroups.length - 1 ? (
-                  <div
-                    className={`editor-group__resize-handle ${
-                      resizingGroupIndex === index ? "editor-group__resize-handle--active" : ""
-                    }`}
-                    role="separator"
-                    aria-orientation="vertical"
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      setResizingGroupIndex(index);
-                    }}
-                  />
-                ) : null}
-              </Fragment>
+              <EditorGroup
+                key={group.id}
+                group={group}
+                groupIndex={index}
+                isActiveGroup={isActiveGroup}
+                isDropTargetGroup={isDropTargetGroup}
+                basis={basis}
+                groupDocument={groupDocument}
+                needsEditor={needsEditor}
+                showLoadingEditor={showLoadingEditor}
+                isLoadingActiveFile={Boolean(groupFile && loadingBufferIds.has(groupFile.id))}
+                showMergeReview={showMergeReview}
+                resolvedTheme={resolvedTheme}
+                previewOpen={layout.previewOpen}
+                pdfUrl={pdfEntry?.url ?? null}
+                pdfError={pdfEntry?.error ?? null}
+                tabDrag={tabDrag}
+                mergeReviewData={mergeReviewData}
+                showResizeHandle={index < editorGroups.length - 1}
+                resizingActive={resizingGroupIndex === index}
+                canSplitRight={group.openTabs.length > 0}
+                getDocument={stableGetDocument}
+                onActivateTab={stableActivateTab}
+                onPromoteTab={stablePromoteTab}
+                onCloseTab={stableCloseTab}
+                onTabDragStart={stableTabDragStart}
+                onTabDragOver={stableTabDragOver}
+                onTabDrop={stableTabDrop}
+                onTabDragEnd={stableTabDragEnd}
+                onSplitRight={stableSplitRight}
+                onFocusGroup={stableFocusGroup}
+                onUpdateDocument={stableUpdateDocument}
+                onCursorChange={stableCursorChange}
+                onStartResize={stableStartResize}
+              />
             );
           })}
         </section>

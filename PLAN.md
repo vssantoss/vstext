@@ -1,4 +1,4 @@
-# VS Text Status
+# vsText Status
 
 ## Summary
 
@@ -57,32 +57,6 @@ This project now has a working greenfield foundation for a shared web and Electr
   - `pnpm test` passes.
   - `pnpm build` passes.
 
-## Pending
-
-- Real cloud provider integrations:
-  - OneDrive OAuth PKCE flow is not implemented yet.
-  - Google Drive OAuth PKCE flow is not implemented yet.
-  - Dropbox OAuth PKCE flow is not implemented yet.
-  - Provider registry and UI are scaffolded, but real provider-specific auth and file transport still need implementation.
-- Cloud-root workspace support:
-  - Opening a OneDrive, Google Drive, or Dropbox folder directly inside the app is not implemented yet.
-  - Provider-backed file listing, read, write, create, rename, delete, and change polling are still pending.
-  - Current cross-machine resume works only when the workspace folder is already synced externally by a desktop sync client.
-- Sync engine depth:
-  - No real remote delta sync for provider-backed files yet.
-  - No offline replay queue for provider API writes yet.
-  - No manifest polling against real provider change feeds yet.
-- File operations:
-  - Create/rename/delete flows are planned but not implemented in the UI.
-  - Unsupported local-browser fallback import/export flow for iOS/Safari is not implemented yet.
-  - Manual encoding reopen/save options are not exposed in the UI yet.
-- Search and indexing:
-  - Desktop search works as a main-process query-time scan, but there is no dedicated background index lifecycle yet.
-  - Web/PWA intentionally does not expose workspace-wide search.
-- Testing depth:
-  - No integration or end-to-end coverage yet for Electron, browser file access, session handoff, or mobile layout.
-  - No automated tests yet for compare flow and draft conflict resolution UI.
-
 ## Current Reality vs Original Plan
 
 - The original plan targeted direct cloud-provider roots in v1.
@@ -91,28 +65,3 @@ This project now has a working greenfield foundation for a shared web and Electr
   - The shared provider contract is now in place, but the actual cloud adapters are still scaffolded.
 - The theme system and cross-device session UX are implemented at the app level.
   - The remaining work is mainly around real provider transport and deeper filesystem operations.
-
-## Future Ideas
-
-- Cloud and sync:
-  - Complete direct OneDrive, Google Drive, and Dropbox adapters with PKCE auth and provider-specific delta polling.
-  - Add true cloud-root workspaces in both PWA and Electron.
-  - Add richer remote change handling, including manifest version history and better recovery flows.
-- Editor capabilities:
-  - Add in-file find/replace UI and command palette.
-  - Add richer Markdown features such as outline view, table of contents, and preview navigation sync.
-  - Add more languages and smarter large-file degradation.
-  - PDF file utilities: join pdf files, remove pages, reorder pages, slice pdf files, etc
-  - Photos/images preview allowing zoom, etc. On opening photo allow navigation on the other photos os the folder on the preview tab
-- File management:
-  - Add create, rename, delete, duplicate, and move for files and folders.
-  - Add recent workspaces and pinned workspaces.
-  - Add explicit import/export flows for restricted mobile browsers.
-- Sync and collaboration:
-  - Add a clearer session timeline so users can inspect which device changed what.
-  - Add remote draft diffing with a stronger merge experience.
-  - Explore optional app-account or backend support if cross-device state grows beyond folder-synced manifests.
-- Product polish:
-  - Add onboarding for provider setup and workspace manifest concepts.
-  - Add stronger accessibility coverage, keyboard shortcuts, and touch-specific affordances.
-  - Add integration and E2E test coverage for desktop, PWA install, and responsive behavior.

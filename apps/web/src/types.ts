@@ -61,6 +61,7 @@ export interface WorkspaceRoot {
   displayName: string;
   kind: WorkspaceKind;
   modifiedAt?: string;
+  skippedFolders?: string[];
 }
 
 export interface DeviceWorkspaceHint {
@@ -315,9 +316,10 @@ export interface AppDesktopApi {
   setWindowTheme: (theme: ResolvedTheme) => Promise<boolean>;
   openDirectory: (scanId: string) => Promise<OpenDirectoryResult | null>;
   openDirectoryByPath: (absolutePath: string, scanId: string) => Promise<OpenDirectoryResult | null>;
+  restoreWorkspaceAccess: (rootPath: string) => Promise<boolean>;
   cancelOpenDirectoryScan: (scanId: string) => Promise<boolean>;
   skipOpenDirectoryFolder: (scanId: string, folderPath: string) => Promise<boolean>;
-  scanWorkspace: (rootPath: string) => Promise<WorkspaceFileSnapshot[]>;
+  scanWorkspace: (rootPath: string, skippedFolders?: string[]) => Promise<WorkspaceFileSnapshot[]>;
   getFileSnapshot: (absolutePath: string) => Promise<WorkspaceFileSnapshot | null>;
   searchWorkspace: (rootPath: string, query: string, requestId: string, limit?: number) => Promise<SearchEntry[]>;
   cancelWorkspaceSearch: (requestId: string) => Promise<boolean>;

@@ -13,7 +13,7 @@ export {
   SUPPORTED_TEXT_EXTENSIONS
 };
 
-export const APP_NAME = "VS Text";
+export const APP_NAME = "vsText";
 export const APP_SLUG = "vstext";
 export const DATABASE_NAME = "vstext-db";
 export const DEVICE_ID_STORAGE_KEY = "vstext-device-id";

@@ -39,8 +39,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "pwa-192.svg", "pwa-512.svg"],
       manifest: {
-        name: "VS Text",
-        short_name: "vstext",
+        name: "vsText",
+        short_name: "vsText",
         description: "A web and desktop text editor with synced workspace manifests.",
         theme_color: "#0f172a",
         background_color: "#f4efe6",

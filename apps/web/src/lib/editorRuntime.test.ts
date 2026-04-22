@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBufferFromBody, evictCleanBuffers, mergeLayout } from "./editorRuntime";
+import { createBufferFromBody, evictCleanBuffers, mergeLayout, resolvePreviewTabId } from "./editorRuntime";
 import type { DocumentBuffer, LayoutState, WorkspaceFileRecord } from "../types";
 
 const defaultLayout: LayoutState = {
@@ -66,5 +66,27 @@ describe("editor runtime", () => {
     expect(Object.keys(retained)).toContain("doc-9");
     expect(Object.keys(retained)).toHaveLength(8);
     expect(retained["doc-2"]).toBeUndefined();
+  });
+
+  it("does not demote an already promoted tab on single-click activation", () => {
+    expect(
+      resolvePreviewTabId({
+        asPreview: true,
+        existingPreviewTabId: null,
+        targetDocumentId: "doc-1",
+        documentAlreadyOpen: true
+      })
+    ).toBeNull();
+  });
+
+  it("replaces the active preview tab only when opening a new preview document", () => {
+    expect(
+      resolvePreviewTabId({
+        asPreview: true,
+        existingPreviewTabId: "doc-preview",
+        targetDocumentId: "doc-2",
+        documentAlreadyOpen: false
+      })
+    ).toBe("doc-2");
   });
 });

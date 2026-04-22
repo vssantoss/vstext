@@ -125,6 +125,14 @@ function joinPath(parts: string[]) {
   return parts.filter(Boolean).join("/");
 }
 
+function isPathWithinFolder(targetPath: string, folderPath: string) {
+  return targetPath === folderPath || targetPath.startsWith(`${folderPath}/`);
+}
+
+function isPathWithinSkippedFolders(targetPath: string, skippedFolders: string[]) {
+  return skippedFolders.some((folderPath) => isPathWithinFolder(targetPath, folderPath));
+}
+
 function getWorkspaceRoot(directoryHandle: FileSystemDirectoryHandle): WorkspaceRoot {
   return {
     id: `local-root:${directoryHandle.name}`,
@@ -155,9 +163,22 @@ function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
     });
 }
 
+function shouldUseElectronLocalIdsFromSnapshots(root: WorkspaceRoot, snapshots: WorkspaceFileSnapshot[]) {
+  return root.provider === "local" && snapshots.some((snapshot) => typeof snapshot.absolutePath === "string");
+}
+
+function shouldUseElectronLocalIdsFromFiles(root: WorkspaceRoot, files: WorkspaceFileRecord[]) {
+  return root.provider === "local" && files.some((file) => file.id === `local:${file.path}`);
+}
+
+function getTreeNodeId(root: WorkspaceRoot, relativePath: string, useElectronLocalIds: boolean) {
+  return useElectronLocalIds ? `local:${relativePath}` : `${root.id}:${relativePath}`;
+}
+
 export function buildTreeFromSnapshots(root: WorkspaceRoot, snapshots: WorkspaceFileSnapshot[]): FileTreeNode[] {
   const rootNodes: FileTreeNode[] = [];
   const directoryMap = new Map<string, FileTreeNode>();
+  const useElectronLocalIds = shouldUseElectronLocalIdsFromSnapshots(root, snapshots);
 
   const ensureDirectory = (relativePath: string) => {
     const existing = directoryMap.get(relativePath);
@@ -167,7 +188,7 @@ export function buildTreeFromSnapshots(root: WorkspaceRoot, snapshots: Workspace
 
     const name = relativePath.split("/").at(-1) ?? relativePath;
     const node: FileTreeNode = {
-      id: `${root.id}:${relativePath}`,
+      id: getTreeNodeId(root, relativePath, useElectronLocalIds),
       provider: root.provider,
       kind: "directory",
       name,
@@ -191,7 +212,7 @@ export function buildTreeFromSnapshots(root: WorkspaceRoot, snapshots: Workspace
   for (const snapshot of snapshots) {
     const parentPath = snapshot.path.includes("/") ? snapshot.path.slice(0, snapshot.path.lastIndexOf("/")) : "";
     const fileNode: FileTreeNode = {
-      id: `${root.id}:${snapshot.path}`,
+      id: getTreeNodeId(root, snapshot.path, useElectronLocalIds),
       provider: root.provider,
       kind: "file",
       name: snapshot.path.split("/").at(-1) ?? snapshot.path,
@@ -199,6 +220,66 @@ export function buildTreeFromSnapshots(root: WorkspaceRoot, snapshots: Workspace
       absolutePath: snapshot.absolutePath,
       modifiedAt: snapshot.modifiedAt,
       size: snapshot.size
+    };
+
+    if (!parentPath) {
+      rootNodes.push(fileNode);
+      continue;
+    }
+
+    const parent = ensureDirectory(parentPath);
+    parent.children = [...(parent.children ?? []), fileNode];
+  }
+
+  return sortTree(rootNodes);
+}
+
+export function buildTreeFromFiles(root: WorkspaceRoot, files: WorkspaceFileRecord[]): FileTreeNode[] {
+  const rootNodes: FileTreeNode[] = [];
+  const directoryMap = new Map<string, FileTreeNode>();
+  const useElectronLocalIds = shouldUseElectronLocalIdsFromFiles(root, files);
+
+  const ensureDirectory = (relativePath: string) => {
+    const existing = directoryMap.get(relativePath);
+    if (existing) {
+      return existing;
+    }
+
+    const name = relativePath.split("/").at(-1) ?? relativePath;
+    const node: FileTreeNode = {
+      id: getTreeNodeId(root, relativePath, useElectronLocalIds),
+      provider: root.provider,
+      kind: "directory",
+      name,
+      path: relativePath,
+      absolutePath: root.rootPath ? `${root.rootPath}/${relativePath}`.replaceAll("\\", "/") : undefined,
+      children: []
+    };
+    directoryMap.set(relativePath, node);
+
+    const parentPath = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "";
+    if (!parentPath) {
+      rootNodes.push(node);
+      return node;
+    }
+
+    const parent = ensureDirectory(parentPath);
+    parent.children = [...(parent.children ?? []), node];
+    return node;
+  };
+
+  for (const file of files) {
+    const parentPath = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+    const fileNode: FileTreeNode = {
+      id: file.id,
+      provider: root.provider,
+      kind: "file",
+      name: file.name,
+      path: file.path,
+      absolutePath: file.absolutePath,
+      modifiedAt: file.modifiedAt,
+      size: file.size,
+      unavailable: file.unavailable
     };
 
     if (!parentPath) {
@@ -261,6 +342,7 @@ async function walkBrowserDirectoryMetadata(
   progress: BrowserProgressReporter,
   signal?: AbortSignal,
   shouldSkipFolder?: (relativePath: string) => boolean,
+  skippedFolders?: Set<string>,
   depth = 0
 ): Promise<{ nodes: FileTreeNode[]; cancelled: boolean; skipped: boolean }> {
   const nodes: FileTreeNode[] = [];
@@ -281,6 +363,7 @@ async function walkBrowserDirectoryMetadata(
   }
 
   if (currentRelativePath && shouldSkipFolder?.(currentRelativePath)) {
+    skippedFolders?.add(currentRelativePath);
     return {
       nodes: [],
       cancelled: false,
@@ -297,6 +380,7 @@ async function walkBrowserDirectoryMetadata(
     }
 
     if (currentRelativePath && shouldSkipFolder?.(currentRelativePath)) {
+      skippedFolders?.add(currentRelativePath);
       skipped = true;
       break;
     }
@@ -319,6 +403,7 @@ async function walkBrowserDirectoryMetadata(
       progress.notify(relativePath, { folderStack: childFolderStack });
 
       if (shouldSkipFolder?.(relativePath)) {
+        skippedFolders?.add(relativePath);
         continue;
       }
 
@@ -331,6 +416,7 @@ async function walkBrowserDirectoryMetadata(
         progress,
         signal,
         shouldSkipFolder,
+        skippedFolders,
         depth + 1
       );
 
@@ -399,6 +485,14 @@ async function walkBrowserDirectoryMetadata(
     }
   }
 
+  if (skipped) {
+    return {
+      nodes: [],
+      cancelled,
+      skipped: true
+    };
+  }
+
   return {
     nodes: sortTree(nodes),
     cancelled,
@@ -410,16 +504,25 @@ async function walkBrowserDirectoryForSnapshots(
   directoryHandle: FileSystemDirectoryHandle,
   pathParts: string[],
   fileHandles: Map<string, FileSystemFileHandle>,
+  skippedFolders: string[] = [],
   depth = 0
 ): Promise<WorkspaceFileSnapshot[]> {
   const snapshots: WorkspaceFileSnapshot[] = [];
   const values = directoryHandle.values?.bind(directoryHandle);
+  const currentRelativePath = joinPath(pathParts);
 
   if (!values) {
     throw new Error("Directory iteration is not available in this browser.");
   }
 
   if (depth > MAX_BROWSER_SCAN_DEPTH) {
+    return snapshots;
+  }
+
+  if (
+    currentRelativePath &&
+    skippedFolders.some((folderPath) => isPathWithinFolder(currentRelativePath, folderPath))
+  ) {
     return snapshots;
   }
 
@@ -431,10 +534,15 @@ async function walkBrowserDirectoryForSnapshots(
     }
 
     if (entry.kind === "directory") {
+      if (skippedFolders.some((folderPath) => isPathWithinFolder(relativePath, folderPath))) {
+        continue;
+      }
+
       snapshots.push(...(await walkBrowserDirectoryForSnapshots(
         entry as FileSystemDirectoryHandle,
         [...pathParts, entry.name],
         fileHandles,
+        skippedFolders,
         depth + 1
       )));
       continue;
@@ -470,6 +578,7 @@ export async function loadBrowserWorkspaceFromHandle(
   const root = getWorkspaceRoot(directoryHandle);
   const fileHandles = new Map<string, FileSystemFileHandle>();
   const progress = createBrowserProgressReporter(options.onProgress ?? (() => {}));
+  const skippedFolders = new Set<string>();
   const walkResult = await walkBrowserDirectoryMetadata(
     root,
     directoryHandle,
@@ -478,15 +587,20 @@ export async function loadBrowserWorkspaceFromHandle(
     fileHandles,
     progress,
     options.signal,
-    options.shouldSkipFolder
+    options.shouldSkipFolder,
+    skippedFolders
   );
   progress.flush();
   const snapshot = progress.getSnapshot();
   const tree = walkResult.nodes;
   const files = flattenTreeToWorkspaceFiles(root, tree);
+  const nextRoot: WorkspaceRoot = {
+    ...root,
+    skippedFolders: [...skippedFolders].sort()
+  };
 
   return {
-    root,
+    root: nextRoot,
     tree,
     files,
     directoryHandle,
@@ -519,9 +633,33 @@ export async function openBrowserWorkspace(
 
 export async function scanBrowserWorkspace(
   directoryHandle: FileSystemDirectoryHandle,
-  fileHandles: Map<string, FileSystemFileHandle>
+  fileHandles: Map<string, FileSystemFileHandle>,
+  skippedFolders: string[] = []
 ): Promise<WorkspaceFileSnapshot[]> {
-  return walkBrowserDirectoryForSnapshots(directoryHandle, [], fileHandles);
+  return walkBrowserDirectoryForSnapshots(directoryHandle, [], fileHandles, skippedFolders);
+}
+
+export function pruneWorkspaceTreeForSkippedFolders(nodes: FileTreeNode[], skippedFolders: string[]): FileTreeNode[] {
+  if (skippedFolders.length === 0) {
+    return nodes;
+  }
+
+  return nodes.flatMap((node) => {
+    if (isPathWithinSkippedFolders(node.path, skippedFolders)) {
+      return [];
+    }
+
+    if (node.kind === "directory") {
+      const children = pruneWorkspaceTreeForSkippedFolders(node.children ?? [], skippedFolders);
+      if (children.length === 0) {
+        return [];
+      }
+
+      return [{ ...node, children }];
+    }
+
+    return [node];
+  });
 }
 
 export function inflateElectronWorkspace(result: OpenDirectoryResult) {

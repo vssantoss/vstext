@@ -178,7 +178,7 @@ function getRendererErrorHtml(message, detail = "") {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>VS Text</title>
+    <title>vsText</title>
     <style>
       :root {
         color-scheme: dark;
@@ -253,7 +253,7 @@ async function loadRenderer(mainWindow) {
       console.error(`Failed to load built renderer from ${distPath}: ${message}`);
       await mainWindow.loadURL(
         `data:text/html;charset=utf-8,${encodeURIComponent(
-          getRendererErrorHtml("VS Text could not load the desktop renderer.", `${distPath}\n${message}`)
+          getRendererErrorHtml("vsText could not load the desktop renderer.", `${distPath}\n${message}`)
         )}`
       );
       return;
@@ -263,7 +263,7 @@ async function loadRenderer(mainWindow) {
   await mainWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(
       getRendererErrorHtml(
-        "VS Text could not find a renderer to load.",
+        "vsText could not find a renderer to load.",
         `Dev URL: ${rendererUrl}\nBuilt file: ${distPath}\nRun pnpm build:web or start pnpm dev:desktop.`
       )
     )}`
@@ -303,6 +303,26 @@ function shouldSkipWorkspaceEntry(entry) {
 
 function isPathWithinFolder(targetPath, folderPath) {
   return targetPath === folderPath || targetPath.startsWith(`${folderPath}/`);
+}
+
+function normalizeSkippedFolders(skippedFolders) {
+  if (!Array.isArray(skippedFolders)) {
+    return [];
+  }
+
+  return [...new Set(
+    skippedFolders
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => toPosixPath(value.trim()))
+  )].sort();
+}
+
+function shouldSkipRelativeFolder(targetPath, skippedFolders) {
+  if (typeof targetPath !== "string" || !targetPath) {
+    return false;
+  }
+
+  return skippedFolders.some((folderPath) => isPathWithinFolder(targetPath, folderPath));
 }
 
 function createOpenDirectoryScanState(scanId) {
@@ -492,6 +512,16 @@ async function walkDirectory(rootPath, currentPath, progress, scanState, folderS
     }
   }
 
+  if (skipped) {
+    return {
+      tree: [],
+      loadWarnings: warnings.slice(0, maxLoadWarnings),
+      skippedEntryCount,
+      cancelled,
+      skipped: true
+    };
+  }
+
   const tree = files.sort((left, right) => {
     if (left.kind !== right.kind) {
       return left.kind === "directory" ? -1 : 1;
@@ -509,9 +539,13 @@ async function walkDirectory(rootPath, currentPath, progress, scanState, folderS
   };
 }
 
-async function scanDirectoryMetadata(rootPath, currentPath, depth = 0) {
+async function scanDirectoryMetadata(rootPath, currentPath, skippedFolders = [], depth = 0) {
   const resolvedCurrent = currentPath ?? rootPath;
+  const currentRelativePath = toPosixPath(path.relative(rootPath, resolvedCurrent));
   if (depth > maxWorkspaceScanDepth) {
+    return [];
+  }
+  if (currentRelativePath && shouldSkipRelativeFolder(currentRelativePath, skippedFolders)) {
     return [];
   }
   const entries = await fs.readdir(resolvedCurrent, { withFileTypes: true });
@@ -527,7 +561,11 @@ async function scanDirectoryMetadata(rootPath, currentPath, depth = 0) {
 
     try {
       if (entry.isDirectory()) {
-        snapshots.push(...(await scanDirectoryMetadata(rootPath, absolutePath, depth + 1)));
+        if (shouldSkipRelativeFolder(relativePath, skippedFolders)) {
+          continue;
+        }
+
+        snapshots.push(...(await scanDirectoryMetadata(rootPath, absolutePath, skippedFolders, depth + 1)));
         continue;
       }
 
@@ -766,6 +804,7 @@ async function loadDirectoryResult(rootPath, progress, scanState) {
       displayName: path.basename(rootPath),
       kind: "local-root",
       modifiedAt: stat.mtime.toISOString(),
+      skippedFolders: [...scanState.skippedFolders].sort(),
       tree: loadedWorkspace.tree,
       loadWarnings: loadedWorkspace.loadWarnings,
       skippedEntryCount: loadedWorkspace.skippedEntryCount,
@@ -1035,6 +1074,25 @@ ipcMain.handle("local:open-directory-by-path", async (event, absolutePath, scanI
   }
 });
 
+ipcMain.handle("local:restore-workspace-access", async (_event, rootPath) => {
+  if (typeof rootPath !== "string" || !rootPath.trim()) {
+    return false;
+  }
+
+  try {
+    const normalizedRoot = normalizePath(rootPath);
+    const stat = await fs.stat(normalizedRoot);
+    if (!stat.isDirectory()) {
+      return false;
+    }
+
+    registerWorkspaceRoot(normalizedRoot);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
 ipcMain.handle("local:cancel-open-directory", async (_event, scanId) => {
   if (typeof scanId !== "string" || !scanId.trim()) {
     return false;
@@ -1067,7 +1125,7 @@ ipcMain.handle("local:skip-open-directory-folder", async (_event, scanId, folder
   return true;
 });
 
-ipcMain.handle("local:scan-workspace", async (_event, rootPath) => {
+ipcMain.handle("local:scan-workspace", async (_event, rootPath, skippedFolders) => {
   if (typeof rootPath !== "string" || !rootPath.trim()) {
     return [];
   }
@@ -1077,7 +1135,7 @@ ipcMain.handle("local:scan-workspace", async (_event, rootPath) => {
   }
 
   try {
-    return await scanDirectoryMetadata(rootPath, rootPath);
+    return await scanDirectoryMetadata(rootPath, rootPath, normalizeSkippedFolders(skippedFolders));
   } catch {
     return [];
   }

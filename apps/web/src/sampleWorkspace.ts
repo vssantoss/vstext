@@ -101,3 +101,22 @@ function createSampleBuffer(path: string): DocumentBuffer {
 export const sampleFiles: WorkspaceFileRecord[] = Object.keys(sampleBodies).map(createSampleFile);
 
 export const sampleBuffers: DocumentBuffer[] = Object.keys(sampleBodies).map(createSampleBuffer);
+
+export function readSampleWorkspaceText(path: string): string {
+  const body = sampleBodies[path];
+  if (typeof body !== "string") {
+    throw new Error(`Unknown sample workspace file: ${path}`);
+  }
+
+  return body;
+}
+
+export function mergeSampleWorkspaceBuffers(buffers: DocumentBuffer[]): DocumentBuffer[] {
+  const merged = new Map(sampleBuffers.map((buffer) => [buffer.documentId, buffer] as const));
+
+  for (const buffer of buffers) {
+    merged.set(buffer.documentId, buffer);
+  }
+
+  return [...merged.values()];
+}

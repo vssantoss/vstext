@@ -142,6 +142,20 @@ describe("provider runtime", () => {
     expect(electronAPI.readFile).toHaveBeenCalledWith("C:/workspace/notes.md");
     expect(electronAPI.writeFile).toHaveBeenCalledWith("C:/workspace/notes.md", "# Notes");
     expect(electronAPI.getFileSnapshot).toHaveBeenCalledWith("C:/workspace/notes.md");
-    expect(electronAPI.scanWorkspace).toHaveBeenCalledWith("C:/workspace");
+    expect(electronAPI.scanWorkspace).toHaveBeenCalledWith("C:/workspace", []);
+  });
+
+  it("forwards skipped folders when polling the current workspace", async () => {
+    const electronAPI = {
+      scanWorkspace: vi.fn(async () => [])
+    } as Pick<AppDesktopApi, "scanWorkspace"> as AppDesktopApi;
+
+    const registry = createProviderRegistry({
+      electronAPI,
+      ...createBrowserRefs()
+    });
+
+    await expect(registry.local.scanWorkspace("C:/workspace", ["node_modules", "dist"])).resolves.toEqual([]);
+    expect(electronAPI.scanWorkspace).toHaveBeenCalledWith("C:/workspace", ["node_modules", "dist"]);
   });
 });

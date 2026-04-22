@@ -1,7 +1,7 @@
 {
-  "name": "text-vsantos-net",
-  "version": "0.1.0",
-  "description": "Cross-platform text editor with web and Electron desktop builds.",
+  "name": "vstext",
+  "version": "0.2.0",
+  "description": "A cross-platform text editor for the browser and desktop with tabbed editing, Markdown preview, and syntax highlighting. Connects to cloud services like OneDrive, Google Drive, and Dropbox, allowing you to work on your files and keep your tabs, layout, and session in sync - so you pick up right where you left off on any device.",
   "author": "Victor Santos",
   "license": "Apache-2.0",
   "homepage": "https://text.vshub.app",
