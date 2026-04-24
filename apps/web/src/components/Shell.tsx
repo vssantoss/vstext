@@ -778,7 +778,19 @@ interface TabStripProps {
   onTabDragOver: (overTabId: string | null, before: boolean) => void;
   onTabDrop: (anchorTabId: string | null, before: boolean) => void;
   onTabDragEnd: () => void;
-  onSplitRight?: () => void;
+  onSplitRight?: (documentId?: string) => void;
+  onCloseOthers: (tabId: string) => void;
+  onCloseToRight: (tabId: string) => void;
+  onCloseSaved: () => void;
+  onCloseAll: () => void;
+  onCopyPath: (tabId: string) => void;
+  onCopyRelativePath: (tabId: string) => void;
+}
+
+interface TabContextMenu {
+  tabId: string;
+  x: number;
+  y: number;
 }
 
 export const TabStrip = memo(TabStripImpl);
@@ -786,6 +798,16 @@ export const TabStrip = memo(TabStripImpl);
 function TabStripImpl(props: TabStripProps) {
   const isDragActive = props.tabDrag !== null;
   const isDropTargetGroup = props.tabDrag?.overGroupId === props.groupId;
+  const [contextMenu, setContextMenu] = useState<TabContextMenu | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [contextMenu]);
 
   function handleTabDragOver(event: React.DragEvent<HTMLDivElement>, tabId: string) {
     if (!isDragActive) return;
@@ -812,6 +834,19 @@ function TabStripImpl(props: TabStripProps) {
     event.preventDefault();
     props.onTabDrop(null, false);
   }
+
+  function runAction(action: () => void) {
+    action();
+    setContextMenu(null);
+  }
+
+  const contextTabIndex = contextMenu ? props.openTabs.indexOf(contextMenu.tabId) : -1;
+  const isRightmost = contextTabIndex === props.openTabs.length - 1;
+  const isPreviewTab = contextMenu ? props.previewTabId === contextMenu.tabId : false;
+  const hasSavedTabs = props.openTabs.some((id) => {
+    const d = props.getDocument(id);
+    return d && !d.dirty;
+  });
 
   return (
     <div
@@ -846,6 +881,14 @@ function TabStripImpl(props: TabStripProps) {
                 event.preventDefault();
                 props.onClose(tabId);
               }
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu({
+                tabId,
+                x: Math.min(event.clientX, window.innerWidth - 220),
+                y: event.clientY
+              });
             }}
             onDragStart={(event) => {
               event.dataTransfer.effectAllowed = "move";
@@ -888,10 +931,75 @@ function TabStripImpl(props: TabStripProps) {
           className="tab-strip__action"
           title="Split editor right"
           aria-label="Split editor right"
-          onClick={props.onSplitRight}
+          onClick={() => props.onSplitRight?.()}
         >
           <Columns2 size={14} />
         </button>
+      ) : null}
+
+      {contextMenu ? (
+        <>
+          <div className="context-menu-backdrop" onMouseDown={() => setContextMenu(null)} />
+          <div
+            className="context-menu"
+            role="menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button type="button" className="menu__item" onClick={() => runAction(() => props.onClose(contextMenu.tabId))}>
+              <span className="menu__label">Close</span>
+            </button>
+            {isPreviewTab ? (
+              <button type="button" className="menu__item" onClick={() => runAction(() => props.onPromote(contextMenu.tabId))}>
+                <span className="menu__label">Keep Open</span>
+              </button>
+            ) : null}
+            <div className="menu__divider" />
+            <button
+              type="button"
+              className="menu__item"
+              disabled={props.openTabs.length <= 1}
+              onClick={() => runAction(() => props.onCloseOthers(contextMenu.tabId))}
+            >
+              <span className="menu__label">Close Others</span>
+            </button>
+            <button
+              type="button"
+              className="menu__item"
+              disabled={isRightmost}
+              onClick={() => runAction(() => props.onCloseToRight(contextMenu.tabId))}
+            >
+              <span className="menu__label">Close to the Right</span>
+            </button>
+            <button
+              type="button"
+              className="menu__item"
+              disabled={!hasSavedTabs}
+              onClick={() => runAction(() => props.onCloseSaved())}
+            >
+              <span className="menu__label">Close Saved</span>
+            </button>
+            <button type="button" className="menu__item" onClick={() => runAction(() => props.onCloseAll())}>
+              <span className="menu__label">Close All</span>
+            </button>
+            <div className="menu__divider" />
+            {window.electronAPI ? (
+              <button type="button" className="menu__item" onClick={() => runAction(() => props.onCopyPath(contextMenu.tabId))}>
+                <span className="menu__label">Copy Path</span>
+              </button>
+            ) : null}
+            <button type="button" className="menu__item" onClick={() => runAction(() => props.onCopyRelativePath(contextMenu.tabId))}>
+              <span className="menu__label">Copy Relative Path</span>
+            </button>
+            {props.onSplitRight ? (
+              <>
+                <div className="menu__divider" />
+                <button type="button" className="menu__item" onClick={() => runAction(() => props.onSplitRight?.(contextMenu.tabId))}>
+                  <span className="menu__label">Split Right</span>
+                </button>
+              </>
+            ) : null}
+          </div>
+        </>
       ) : null}
     </div>
   );

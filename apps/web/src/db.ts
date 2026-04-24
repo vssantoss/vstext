@@ -39,15 +39,21 @@ export async function persistWorkspaceSnapshot(
 ) {
   await db.transaction("rw", db.workspaces, db.files, db.buffers, db.manifests, async () => {
     await db.workspaces.put(workspace);
-    await db.files.bulkPut(files);
-    await db.buffers.clear();
+    await db.files.where("workspaceId").equals(workspace.id).delete();
+    await db.buffers.where("workspaceId").equals(workspace.id).delete();
 
     if (buffers.length > 0) {
       await db.buffers.bulkPut(buffers);
     }
 
+    if (files.length > 0) {
+      await db.files.bulkPut(files);
+    }
+
     if (workspace.manifest) {
       await db.manifests.put(workspace.manifest);
+    } else {
+      await db.manifests.where("workspaceId").equals(workspace.id).delete();
     }
   });
 }

@@ -64,6 +64,7 @@ import {
 import { createProviderRegistry, getConfiguredCloudProviderCount } from "./lib/providers";
 import { detectLineEnding, hashText } from "./lib/encoding";
 import { getLanguageMetadata, isMarkdownPath } from "./lib/language";
+import { formatAbsolutePathForClipboard } from "./lib/platform";
 import {
   applySessionSelections,
   buildDraftClearRefs,
@@ -1844,6 +1845,102 @@ export default function App() {
     }
   }
 
+  function closeTabsFromGroup(groupId: string, tabIdsToClose: Set<string>) {
+    if (tabIdsToClose.size === 0) return;
+    for (const documentId of tabIdsToClose) {
+      const file = fileMapRef.current[documentId];
+      logTabActivity("Closed tab.", file, { groupId, reason: "context-menu" });
+    }
+    let removedGroupIndex = -1;
+    setEditorGroups((groups) => {
+      const next = groups.map((group) => {
+        if (group.id !== groupId) return group;
+        const nextTabs = group.openTabs.filter((id) => !tabIdsToClose.has(id));
+        let nextActive = group.activeTabId;
+        if (group.activeTabId && tabIdsToClose.has(group.activeTabId)) {
+          nextActive = nextTabs.at(-1) ?? null;
+        }
+        return {
+          ...group,
+          openTabs: nextTabs,
+          activeTabId: nextActive,
+          previewTabId: group.previewTabId && tabIdsToClose.has(group.previewTabId) ? null : group.previewTabId
+        };
+      });
+      if (next.length > 1) {
+        const emptyIndex = next.findIndex((g) => g.id === groupId && g.openTabs.length === 0);
+        if (emptyIndex !== -1) {
+          removedGroupIndex = emptyIndex;
+          return next.filter((_, i) => i !== emptyIndex);
+        }
+      }
+      return next;
+    });
+    if (removedGroupIndex !== -1) {
+      setGroupSizes((sizes) => {
+        if (sizes.length <= 1) return sizes;
+        const removed = sizes[removedGroupIndex] ?? 0;
+        const remaining = sizes.filter((_, i) => i !== removedGroupIndex);
+        if (remaining.length === 0) return sizes;
+        const share = removed / remaining.length;
+        return remaining.map((s) => s + share);
+      });
+      setActiveGroupId((current) => {
+        if (current !== groupId) return current;
+        return editorGroups[Math.max(0, removedGroupIndex - 1)]?.id ?? editorGroups[0]?.id ?? current;
+      });
+    }
+    for (const documentId of tabIdsToClose) {
+      const openElsewhere = editorGroupsRef.current.some(
+        (g) => g.id !== groupId && g.openTabs.includes(documentId)
+      );
+      if (!openElsewhere) {
+        evictBufferIfClean(documentId, "tab-closed");
+      }
+    }
+  }
+
+  function handleCloseOtherTabs(documentId: string, groupId: string) {
+    const group = editorGroupsRef.current.find((g) => g.id === groupId);
+    if (!group) return;
+    closeTabsFromGroup(groupId, new Set(group.openTabs.filter((id) => id !== documentId)));
+  }
+
+  function handleCloseTabsToRight(documentId: string, groupId: string) {
+    const group = editorGroupsRef.current.find((g) => g.id === groupId);
+    if (!group) return;
+    const index = group.openTabs.indexOf(documentId);
+    if (index === -1) return;
+    closeTabsFromGroup(groupId, new Set(group.openTabs.slice(index + 1)));
+  }
+
+  function handleCloseSavedTabs(groupId: string) {
+    const group = editorGroupsRef.current.find((g) => g.id === groupId);
+    if (!group) return;
+    const toClose = group.openTabs.filter((id) => !bufferMapRef.current[id]?.dirty);
+    closeTabsFromGroup(groupId, new Set(toClose));
+  }
+
+  function handleCloseAllTabs(groupId: string) {
+    const group = editorGroupsRef.current.find((g) => g.id === groupId);
+    if (!group) return;
+    closeTabsFromGroup(groupId, new Set(group.openTabs));
+  }
+
+  function handleCopyFilePath(documentId: string) {
+    const file = fileMapRef.current[documentId];
+    if (file?.absolutePath) {
+      navigator.clipboard.writeText(formatAbsolutePathForClipboard(file.absolutePath));
+    }
+  }
+
+  function handleCopyRelativePath(documentId: string) {
+    const file = fileMapRef.current[documentId];
+    if (file?.path) {
+      navigator.clipboard.writeText(file.path);
+    }
+  }
+
   function handleUpdateDocument(nextValue: string) {
     if (!activeFile) {
       return;
@@ -1900,9 +1997,9 @@ export default function App() {
     }));
   }
 
-  function handleSplitRight(sourceGroupId: string) {
+  function handleSplitRight(sourceGroupId: string, documentId?: string) {
     const source = editorGroups.find((group) => group.id === sourceGroupId);
-    const seedDocId = source?.activeTabId ?? null;
+    const seedDocId = documentId ?? source?.activeTabId ?? null;
     const newGroup: EditorGroupState = {
       id: createGroupId(),
       openTabs: seedDocId ? [seedDocId] : [],
@@ -3509,6 +3606,12 @@ export default function App() {
   const stableTabDrop = useStableCallback(handleTabDrop);
   const stableTabDragEnd = useStableCallback(handleTabDragEnd);
   const stableSplitRight = useStableCallback(handleSplitRight);
+  const stableCloseOtherTabs = useStableCallback(handleCloseOtherTabs);
+  const stableCloseTabsToRight = useStableCallback(handleCloseTabsToRight);
+  const stableCloseSavedTabs = useStableCallback(handleCloseSavedTabs);
+  const stableCloseAllTabs = useStableCallback(handleCloseAllTabs);
+  const stableCopyFilePath = useStableCallback(handleCopyFilePath);
+  const stableCopyRelativePath = useStableCallback(handleCopyRelativePath);
   const stableFocusGroup = useStableCallback(handleFocusGroup);
   const stableUpdateDocument = useStableCallback(handleUpdateDocument);
   const stableCursorChange = useStableCallback(handleCursorChange);
@@ -3715,6 +3818,12 @@ export default function App() {
                 onTabDrop={stableTabDrop}
                 onTabDragEnd={stableTabDragEnd}
                 onSplitRight={stableSplitRight}
+                onCloseOtherTabs={stableCloseOtherTabs}
+                onCloseTabsToRight={stableCloseTabsToRight}
+                onCloseSavedTabs={stableCloseSavedTabs}
+                onCloseAllTabs={stableCloseAllTabs}
+                onCopyFilePath={stableCopyFilePath}
+                onCopyRelativePath={stableCopyRelativePath}
                 onFocusGroup={stableFocusGroup}
                 onUpdateDocument={stableUpdateDocument}
                 onCursorChange={stableCursorChange}

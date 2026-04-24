@@ -395,6 +395,31 @@ textarea:focus-visible,
   font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
+/* ---------- Context menu (fixed-position, right-click) ---------- */
+
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+.context-menu {
+  position: fixed;
+  min-width: 200px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-modal);
+  padding: 4px;
+  z-index: 201;
+}
+
+.context-menu .menu__item {
+  font-size: 12.5px;
+  padding: 5px 14px;
+  gap: 0;
+}
+
 /* ---------- Workbench (main row) ---------- */
 
 .workbench {

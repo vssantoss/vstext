@@ -80,7 +80,13 @@ export interface EditorGroupProps {
   onTabDragOver: (overGroupId: string, overTabId: string | null, before: boolean) => void;
   onTabDrop: (toGroupId: string, anchorTabId: string | null, before: boolean) => void;
   onTabDragEnd: () => void;
-  onSplitRight: (sourceGroupId: string) => void;
+  onSplitRight: (sourceGroupId: string, documentId?: string) => void;
+  onCloseOtherTabs: (documentId: string, groupId: string) => void;
+  onCloseTabsToRight: (documentId: string, groupId: string) => void;
+  onCloseSavedTabs: (groupId: string) => void;
+  onCloseAllTabs: (groupId: string) => void;
+  onCopyFilePath: (documentId: string) => void;
+  onCopyRelativePath: (documentId: string) => void;
   onFocusGroup: (groupId: string) => void;
   onUpdateDocument: (nextValue: string) => void;
   onCursorChange: (snapshot: CursorSnapshot) => void;
@@ -117,6 +123,12 @@ function EditorGroupImpl(props: EditorGroupProps) {
     onTabDrop,
     onTabDragEnd,
     onSplitRight,
+    onCloseOtherTabs,
+    onCloseTabsToRight,
+    onCloseSavedTabs,
+    onCloseAllTabs,
+    onCopyFilePath,
+    onCopyRelativePath,
     onFocusGroup,
     onUpdateDocument,
     onCursorChange,
@@ -140,7 +152,11 @@ function EditorGroupImpl(props: EditorGroupProps) {
     (anchorTabId: string | null, before: boolean) => onTabDrop(groupId, anchorTabId, before),
     [onTabDrop, groupId]
   );
-  const handleSplitRight = useCallback(() => onSplitRight(groupId), [onSplitRight, groupId]);
+  const handleSplitRight = useCallback((documentId?: string) => onSplitRight(groupId, documentId), [onSplitRight, groupId]);
+  const handleCloseOthers = useCallback((id: string) => onCloseOtherTabs(id, groupId), [onCloseOtherTabs, groupId]);
+  const handleCloseToRight = useCallback((id: string) => onCloseTabsToRight(id, groupId), [onCloseTabsToRight, groupId]);
+  const handleCloseSaved = useCallback(() => onCloseSavedTabs(groupId), [onCloseSavedTabs, groupId]);
+  const handleCloseAll = useCallback(() => onCloseAllTabs(groupId), [onCloseAllTabs, groupId]);
   const handleMouseDownCapture = useCallback(() => onFocusGroup(groupId), [onFocusGroup, groupId]);
 
   const handleSurfaceDragOver = useCallback(
@@ -196,6 +212,12 @@ function EditorGroupImpl(props: EditorGroupProps) {
           onTabDrop={handleTabDropBound}
           onTabDragEnd={onTabDragEnd}
           onSplitRight={canSplitRight ? handleSplitRight : undefined}
+          onCloseOthers={handleCloseOthers}
+          onCloseToRight={handleCloseToRight}
+          onCloseSaved={handleCloseSaved}
+          onCloseAll={handleCloseAll}
+          onCopyPath={onCopyFilePath}
+          onCopyRelativePath={onCopyRelativePath}
         />
         <div className="editor-group__surface" onDragOver={handleSurfaceDragOver} onDrop={handleSurfaceDrop}>
           {needsEditor ? (

@@ -2,6 +2,19 @@
 
 All notable project changes are documented here.
 
+## [0.2.1] - 2026-04-23
+
+### Added
+
+- **Tab context menu**: Right-click any editor tab to access Close, Close Others, Close to the Right, Close Saved, Close All, Copy Relative Path, Split Right, and Keep Open (for preview tabs).
+- **Copy Path** (desktop only): Copies the full filesystem path of a file to the clipboard via the tab context menu.
+- **Copy Relative Path**: Copies the workspace-relative path of a file to the clipboard via the tab context menu. Available on both browser and desktop.
+- Disabled states for context menu actions that don't apply (e.g. Close to the Right on the rightmost tab, Close Saved when all tabs have unsaved changes).
+
+### Fixed
+
+- Workspace bug fixes.
+
 ## [0.2.0] - 2026-04-21
 
 ### Added
