@@ -115,6 +115,7 @@ interface EditorSurfaceProps {
   loading?: boolean;
   resolvedTheme: ResolvedTheme;
   previewOpen: boolean;
+  focusRequest?: { documentId: string; token: number } | null;
   onChange: (nextValue: string) => void;
   onCursorChange: (snapshot: CursorSnapshot) => void;
   pdf?: {
@@ -137,6 +138,7 @@ interface EditorSurfaceProps {
 
 export function EditorSurface(props: EditorSurfaceProps) {
   const surfaceRef = useRef<HTMLElement | null>(null);
+  const editorViewRef = useRef<EditorView | null>(null);
   const [editorPct, setEditorPct] = useState(50);
   const [isResizing, setIsResizing] = useState(false);
   const [syntaxExtension, setSyntaxExtension] = useState<Extension | null>(null);
@@ -210,6 +212,20 @@ export function EditorSurface(props: EditorSurfaceProps) {
       cancelled = true;
     };
   }, [props.document?.isPdf, props.document?.path, props.document?.size]);
+
+  useEffect(() => {
+    if (!props.focusRequest || !props.document || props.document.isPdf) {
+      return;
+    }
+
+    if (props.focusRequest.documentId !== props.document.id) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      editorViewRef.current?.focus();
+    });
+  }, [props.focusRequest?.documentId, props.focusRequest?.token, props.document?.id, props.document?.isPdf]);
 
   if (!props.document) {
     return (
@@ -304,6 +320,9 @@ export function EditorSurface(props: EditorSurfaceProps) {
           basicSetup={BASIC_SETUP}
           onChange={handleEditorChange}
           onUpdate={handleEditorUpdate}
+          onCreateEditor={(view) => {
+            editorViewRef.current = view;
+          }}
         />
       </div>
 

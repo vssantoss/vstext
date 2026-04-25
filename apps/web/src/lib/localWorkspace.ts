@@ -210,6 +210,14 @@ export function buildTreeFromSnapshots(root: WorkspaceRoot, snapshots: Workspace
   };
 
   for (const snapshot of snapshots) {
+    if (snapshot.kind === "directory") {
+      const directory = ensureDirectory(snapshot.path);
+      directory.absolutePath = snapshot.absolutePath ?? directory.absolutePath;
+      directory.modifiedAt = snapshot.modifiedAt;
+      directory.size = snapshot.size;
+      continue;
+    }
+
     const parentPath = snapshot.path.includes("/") ? snapshot.path.slice(0, snapshot.path.lastIndexOf("/")) : "";
     const fileNode: FileTreeNode = {
       id: getTreeNodeId(root, snapshot.path, useElectronLocalIds),
@@ -538,6 +546,13 @@ async function walkBrowserDirectoryForSnapshots(
         continue;
       }
 
+      snapshots.push({
+        kind: "directory",
+        path: relativePath,
+        modifiedAt: new Date().toISOString(),
+        size: 0,
+        exists: true
+      });
       snapshots.push(...(await walkBrowserDirectoryForSnapshots(
         entry as FileSystemDirectoryHandle,
         [...pathParts, entry.name],
@@ -557,6 +572,7 @@ async function walkBrowserDirectoryForSnapshots(
     const file = await fileHandle.getFile();
     fileHandles.set(relativePath, fileHandle);
     snapshots.push({
+      kind: "file",
       path: relativePath,
       modifiedAt: new Date(file.lastModified).toISOString(),
       size: file.size,
@@ -754,6 +770,95 @@ async function resolveBrowserFileHandle(
   return fileHandle;
 }
 
+async function resolveBrowserDirectoryHandle(
+  directoryHandle: FileSystemDirectoryHandle,
+  relativePath: string,
+  options: { create?: boolean } = {}
+) {
+  const segments = relativePath.split("/").filter(Boolean);
+  let currentDirectory = directoryHandle;
+
+  for (const segment of segments) {
+    currentDirectory = await currentDirectory.getDirectoryHandle(segment, { create: Boolean(options.create) });
+  }
+
+  return currentDirectory;
+}
+
+async function resolveBrowserParentDirectory(
+  directoryHandle: FileSystemDirectoryHandle,
+  relativePath: string,
+  options: { create?: boolean } = {}
+) {
+  const segments = relativePath.split("/").filter(Boolean);
+  const name = segments.pop();
+
+  if (!name) {
+    throw new Error("Invalid relative path.");
+  }
+
+  return {
+    parent: await resolveBrowserDirectoryHandle(directoryHandle, segments.join("/"), options),
+    name
+  };
+}
+
+async function browserEntryExists(directoryHandle: FileSystemDirectoryHandle, relativePath: string, kind: "file" | "directory") {
+  try {
+    const { parent, name } = await resolveBrowserParentDirectory(directoryHandle, relativePath);
+    if (kind === "directory") {
+      await parent.getDirectoryHandle(name);
+    } else {
+      await parent.getFileHandle(name);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyBrowserFile(
+  sourceHandle: FileSystemFileHandle,
+  targetDirectory: FileSystemDirectoryHandle,
+  targetName: string
+) {
+  const sourceFile = await sourceHandle.getFile();
+  const targetHandle = await targetDirectory.getFileHandle(targetName, { create: true });
+  const writable = await targetHandle.createWritable();
+  await writable.write(await sourceFile.arrayBuffer());
+  await writable.close();
+  return targetHandle;
+}
+
+async function copyBrowserDirectoryContents(
+  sourceDirectory: FileSystemDirectoryHandle,
+  targetDirectory: FileSystemDirectoryHandle,
+  fileHandles: Map<string, FileSystemFileHandle>,
+  targetPath: string
+) {
+  const values = sourceDirectory.values?.bind(sourceDirectory);
+  if (!values) {
+    throw new Error("Directory iteration is not available in this browser.");
+  }
+
+  for await (const entry of values()) {
+    const childTargetPath = joinPath([targetPath, entry.name]);
+    if (entry.kind === "directory") {
+      const childTargetDirectory = await targetDirectory.getDirectoryHandle(entry.name, { create: true });
+      await copyBrowserDirectoryContents(
+        entry as FileSystemDirectoryHandle,
+        childTargetDirectory,
+        fileHandles,
+        childTargetPath
+      );
+      continue;
+    }
+
+    const targetFileHandle = await copyBrowserFile(entry as FileSystemFileHandle, targetDirectory, entry.name);
+    fileHandles.set(childTargetPath, targetFileHandle);
+  }
+}
+
 export async function getBrowserFileSnapshot(
   directoryHandle: FileSystemDirectoryHandle,
   fileHandles: Map<string, FileSystemFileHandle>,
@@ -789,6 +894,85 @@ export async function writeBrowserTextFile(
     modifiedAt: new Date(file.lastModified).toISOString(),
     size: file.size
   };
+}
+
+export async function createBrowserTextFile(
+  directoryHandle: FileSystemDirectoryHandle,
+  fileHandles: Map<string, FileSystemFileHandle>,
+  relativePath: string,
+  content = ""
+) {
+  if (await browserEntryExists(directoryHandle, relativePath, "file")) {
+    throw new Error(`"${relativePath}" already exists.`);
+  }
+
+  return writeBrowserTextFile(directoryHandle, fileHandles, relativePath, content);
+}
+
+export async function createBrowserDirectory(directoryHandle: FileSystemDirectoryHandle, relativePath: string) {
+  const { parent, name } = await resolveBrowserParentDirectory(directoryHandle, relativePath, { create: true });
+  await parent.getDirectoryHandle(name, { create: true });
+  return true;
+}
+
+export async function deleteBrowserEntry(
+  directoryHandle: FileSystemDirectoryHandle,
+  fileHandles: Map<string, FileSystemFileHandle>,
+  relativePath: string,
+  kind: "file" | "directory"
+) {
+  const { parent, name } = await resolveBrowserParentDirectory(directoryHandle, relativePath);
+  await parent.removeEntry(name, { recursive: kind === "directory" });
+  for (const path of [...fileHandles.keys()]) {
+    if (path === relativePath || path.startsWith(`${relativePath}/`)) {
+      fileHandles.delete(path);
+    }
+  }
+  return true;
+}
+
+export async function copyBrowserEntry(
+  directoryHandle: FileSystemDirectoryHandle,
+  fileHandles: Map<string, FileSystemFileHandle>,
+  sourcePath: string,
+  targetPath: string,
+  kind: "file" | "directory"
+) {
+  if (kind === "directory" && targetPath.startsWith(`${sourcePath}/`)) {
+    throw new Error("A folder cannot be copied into itself.");
+  }
+
+  const target = await resolveBrowserParentDirectory(directoryHandle, targetPath, { create: true });
+
+  if (kind === "directory") {
+    if (await browserEntryExists(directoryHandle, targetPath, "directory")) {
+      throw new Error(`"${targetPath}" already exists.`);
+    }
+    const sourceDirectory = await resolveBrowserDirectoryHandle(directoryHandle, sourcePath);
+    const targetDirectory = await target.parent.getDirectoryHandle(target.name, { create: true });
+    await copyBrowserDirectoryContents(sourceDirectory, targetDirectory, fileHandles, targetPath);
+    return true;
+  }
+
+  if (await browserEntryExists(directoryHandle, targetPath, "file")) {
+    throw new Error(`"${targetPath}" already exists.`);
+  }
+  const sourceFileHandle = await resolveBrowserFileHandle(directoryHandle, fileHandles, sourcePath);
+  const targetFileHandle = await copyBrowserFile(sourceFileHandle, target.parent, target.name);
+  fileHandles.set(targetPath, targetFileHandle);
+  return true;
+}
+
+export async function moveBrowserEntry(
+  directoryHandle: FileSystemDirectoryHandle,
+  fileHandles: Map<string, FileSystemFileHandle>,
+  sourcePath: string,
+  targetPath: string,
+  kind: "file" | "directory"
+) {
+  await copyBrowserEntry(directoryHandle, fileHandles, sourcePath, targetPath, kind);
+  await deleteBrowserEntry(directoryHandle, fileHandles, sourcePath, kind);
+  return true;
 }
 
 export async function writeBrowserJson(

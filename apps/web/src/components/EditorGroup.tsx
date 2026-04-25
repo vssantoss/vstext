@@ -63,6 +63,7 @@ export interface EditorGroupProps {
   showMergeReview: boolean;
   resolvedTheme: ResolvedTheme;
   previewOpen: boolean;
+  focusRequest: { documentId: string; token: number } | null;
   pdfUrl: string | null;
   pdfError: string | null;
   tabDrag: TabDragIndicator | null;
@@ -107,6 +108,7 @@ function EditorGroupImpl(props: EditorGroupProps) {
     showMergeReview,
     resolvedTheme,
     previewOpen,
+    focusRequest,
     pdfUrl,
     pdfError,
     tabDrag,
@@ -229,6 +231,7 @@ function EditorGroupImpl(props: EditorGroupProps) {
                   document={groupDocument}
                   resolvedTheme={resolvedTheme}
                   previewOpen={previewOpen}
+                  focusRequest={focusRequest}
                   onChange={onUpdateDocument}
                   onCursorChange={onCursorChange}
                   pdf={

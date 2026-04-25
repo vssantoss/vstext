@@ -226,6 +226,7 @@ export interface SearchEntry {
 }
 
 export interface WorkspaceFileSnapshot {
+  kind?: TreeNodeKind;
   path: string;
   absolutePath?: string;
   modifiedAt: string;
@@ -257,6 +258,12 @@ export interface StoredSetting {
 export interface FileWriteResult {
   modifiedAt: string;
   size: number;
+}
+
+export interface WorkspaceEntryOperation {
+  kind: TreeNodeKind;
+  path: string;
+  absolutePath?: string;
 }
 
 export interface OpenDirectoryResult extends WorkspaceRoot {
@@ -329,6 +336,12 @@ export interface AppDesktopApi {
   readFile: (absolutePath: string) => Promise<string>;
   readFileBytes: (absolutePath: string) => Promise<ArrayBuffer>;
   writeFile: (absolutePath: string, content: string) => Promise<FileWriteResult>;
+  createFile: (absolutePath: string, content?: string) => Promise<FileWriteResult>;
+  createDirectory: (absolutePath: string) => Promise<boolean>;
+  deleteEntry: (absolutePath: string) => Promise<boolean>;
+  moveEntry: (sourceAbsolutePath: string, targetAbsolutePath: string) => Promise<boolean>;
+  copyEntry: (sourceAbsolutePath: string, targetAbsolutePath: string) => Promise<boolean>;
+  revealEntry: (absolutePath: string) => Promise<boolean>;
   writeJson: (absolutePath: string, payload: unknown) => Promise<boolean>;
   readJson: <T>(absolutePath: string) => Promise<T>;
   createLocalWorkspaceRef: (input: CreateLocalWorkspaceRefInput) => Promise<LocalWorkspaceReference>;

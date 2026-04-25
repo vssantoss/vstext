@@ -4,7 +4,9 @@ import type { EditorGroupTabInfo } from "./components/EditorGroup";
 import { useStableCallback } from "./lib/useStableCallback";
 import {
   ActivityBar,
+  ConfirmationDialog,
   FilesPanel,
+  MessageDialog,
   ProvidersPanel,
   SearchPanel,
   SessionCompareDialog,
@@ -108,6 +110,7 @@ import type {
   ThemeMode,
   WorkspaceFileRecord,
   WorkspaceFileSnapshot,
+  WorkspaceEntryOperation,
   WorkspaceBundleLink,
   WorkspaceManifest,
   WorkspaceReference,
@@ -289,6 +292,174 @@ type BundleSaveOptions = {
   bufferMapOverride?: Record<string, DocumentBuffer>;
 };
 
+type FileTreeClipboardEntry = {
+  kind: "file" | "directory";
+  path: string;
+  absolutePath?: string;
+};
+
+type PendingCreateTreeEntry = {
+  kind: "file" | "directory";
+  parentPath: string | null;
+};
+
+function joinWorkspacePath(parentPath: string | null | undefined, name: string) {
+  return [parentPath, name].filter(Boolean).join("/");
+}
+
+function getParentPath(path: string) {
+  const slashIndex = path.lastIndexOf("/");
+  return slashIndex === -1 ? null : path.slice(0, slashIndex);
+}
+
+function getPathName(path: string) {
+  return path.split("/").at(-1) ?? path;
+}
+
+function normalizeRelativeEntryName(input: string | null, fallback: string) {
+  const raw = (input ?? "").trim() || fallback;
+  return raw.replaceAll("\\", "/").split("/").filter(Boolean).join("/");
+}
+
+function splitNameExtension(name: string) {
+  const dotIndex = name.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return { base: name, extension: "" };
+  }
+
+  return {
+    base: name.slice(0, dotIndex),
+    extension: name.slice(dotIndex)
+  };
+}
+
+function getCopiedName(name: string) {
+  const { base, extension } = splitNameExtension(name);
+  return `${base} copy${extension}`;
+}
+
+function getCopyNumberedName(name: string, copyNumber: number) {
+  const { base, extension } = splitNameExtension(name);
+  return `${base} copy ${copyNumber}${extension}`;
+}
+
+function isSameOrChildPath(path: string, parentPath: string) {
+  return path === parentPath || path.startsWith(`${parentPath}/`);
+}
+
+function collectDirectoryPaths(nodes: FileTreeNode[]) {
+  const paths = new Set<string>();
+
+  const visit = (node: FileTreeNode) => {
+    if (node.kind !== "directory") {
+      return;
+    }
+
+    paths.add(node.path);
+    node.children?.forEach(visit);
+  };
+
+  nodes.forEach(visit);
+  return paths;
+}
+
+function sortTreeNodes(nodes: FileTreeNode[]): FileTreeNode[] {
+  return nodes
+    .map((node) =>
+      node.kind === "directory"
+        ? {
+            ...node,
+            children: sortTreeNodes(node.children ?? [])
+          }
+        : node
+    )
+    .sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+}
+
+function upsertDirectoryNode(nodes: FileTreeNode[], workspaceRoot: WorkspaceRoot, directoryPath: string): FileTreeNode[] {
+  const parts = directoryPath.split("/").filter(Boolean);
+  if (parts.length === 0) {
+    return nodes;
+  }
+
+  const insert = (siblings: FileTreeNode[], depth: number): FileTreeNode[] => {
+    const path = parts.slice(0, depth + 1).join("/");
+    const existing = siblings.find((node) => node.kind === "directory" && node.path === path);
+    if (existing) {
+      if (depth >= parts.length - 1) {
+        return siblings;
+      }
+
+      return sortTreeNodes(
+        siblings.map((node) =>
+          node === existing ? { ...node, children: insert(node.children ?? [], depth + 1) } : node
+        )
+      );
+    }
+
+    const nextNode: FileTreeNode = {
+      id: `${workspaceRoot.id}:${path}`,
+      provider: workspaceRoot.provider,
+      kind: "directory",
+      name: parts[depth],
+      path,
+      absolutePath: workspaceRoot.rootPath ? `${workspaceRoot.rootPath}/${path}`.replaceAll("\\", "/") : undefined,
+      children: depth < parts.length - 1 ? insert([], depth + 1) : []
+    };
+
+    return sortTreeNodes([...siblings, nextNode]);
+  };
+
+  return insert(nodes, 0);
+}
+
+function removeTreePath(nodes: FileTreeNode[], targetPath: string): FileTreeNode[] {
+  return nodes
+    .filter((node) => node.path !== targetPath)
+    .map((node) =>
+      node.kind === "directory"
+        ? {
+            ...node,
+            children: removeTreePath(node.children ?? [], targetPath)
+          }
+        : node
+    );
+}
+
+function countTreeDescendants(node: FileTreeNode): number {
+  if (node.kind !== "directory") {
+    return 0;
+  }
+
+  return (node.children ?? []).reduce((count, child) => count + 1 + countTreeDescendants(child), 0);
+}
+
+function areSetsEqual<T>(left: Set<T>, right: Set<T>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getCreateEntryErrorMessage(kind: "file" | "directory") {
+  return kind === "file"
+    ? "Unable to create file. Check the name and try again."
+    : "Unable to create folder. Check the name and try again.";
+}
+
 export default function App() {
   const currentDeviceId = useRef(createDeviceId()).current;
   const currentDeviceName = useRef(createDeviceName()).current;
@@ -309,6 +480,7 @@ export default function App() {
   const activeSearchRequestIdRef = useRef<string | null>(null);
   const scanCancelRef = useRef<(() => void) | null>(null);
   const scanSkipFolderRef = useRef<((folderPath: string) => void) | null>(null);
+  const editorFocusTokenRef = useRef(0);
 
   const [workspace, setWorkspace] = useState<WorkspaceRoot>(sampleRoot);
   const [tree, setTree] = useState<FileTreeNode[]>(sampleTree);
@@ -348,6 +520,14 @@ export default function App() {
   const editorRegionRef = useRef<HTMLElement | null>(null);
   const [resizingGroupIndex, setResizingGroupIndex] = useState<number | null>(null);
   const [tabDrag, setTabDrag] = useState<TabDragState | null>(null);
+  const [fileTreeClipboard, setFileTreeClipboard] = useState<FileTreeClipboardEntry | null>(null);
+  const [selectedTreeEntryId, setSelectedTreeEntryId] = useState<string | null>(null);
+  const [treeSelectionCleared, setTreeSelectionCleared] = useState(false);
+  const [pendingDeleteEntry, setPendingDeleteEntry] = useState<{ node: FileTreeNode; message: string } | null>(null);
+  const [pendingCreateTreeEntry, setPendingCreateTreeEntry] = useState<PendingCreateTreeEntry | null>(null);
+  const [renamingTreeNodeId, setRenamingTreeNodeId] = useState<string | null>(null);
+  const [operationErrorMessage, setOperationErrorMessage] = useState<string | null>(null);
+  const [editorFocusRequest, setEditorFocusRequest] = useState<{ groupId: string; documentId: string; token: number } | null>(null);
   const [loadingBufferIds, setLoadingBufferIds] = useState<Set<string>>(() => new Set());
   const [pdfBlobEntries, setPdfBlobEntries] = useState<Record<string, { url: string; error?: string }>>({});
   const [cacheBootstrapSettled, setCacheBootstrapSettled] = useState(false);
@@ -382,6 +562,7 @@ export default function App() {
   }, [editorGroups]);
   const activeFile = activeTabId ? fileMap[activeTabId] ?? null : null;
   const activeBuffer = activeTabId ? bufferMap[activeTabId] ?? null : null;
+  const activeTreeEntryId = treeSelectionCleared ? null : selectedTreeEntryId ?? activeTabId;
   const activeDocument = composeTextDocument(activeFile, activeBuffer);
   const activeFileRef = useRef(activeFile);
   activeFileRef.current = activeFile;
@@ -1671,6 +1852,8 @@ export default function App() {
     documentId: string,
     options: { preview?: boolean; groupId?: string } = {}
   ) {
+    setSelectedTreeEntryId(documentId);
+    setTreeSelectionCleared(false);
     const asPreview = options.preview ?? true;
     const targetGroupId = options.groupId ?? activeGroupId;
     const resolvedTargetGroupId = editorGroupsRef.current.find((group) => group.id === targetGroupId)?.id ?? editorGroupsRef.current[0]?.id ?? targetGroupId;
@@ -1750,6 +1933,8 @@ export default function App() {
   }
 
   function handlePromoteTab(documentId: string, groupId?: string) {
+    setSelectedTreeEntryId(documentId);
+    setTreeSelectionCleared(false);
     const targetGroupId = groupId ?? activeGroupId;
     const resolvedTargetGroupId = editorGroupsRef.current.find((group) => group.id === targetGroupId)?.id ?? editorGroupsRef.current[0]?.id ?? targetGroupId;
     const existingTargetGroup = editorGroupsRef.current.find((group) => group.id === resolvedTargetGroupId);
@@ -1775,6 +1960,7 @@ export default function App() {
     }
     if (file && !file.isPdf) {
       void ensureBuffer(documentId, willCreateTab ? "tab-promote-create" : "tab-promote");
+      requestEditorFocus(resolvedTargetGroupId, documentId);
     }
   }
 
@@ -1941,6 +2127,388 @@ export default function App() {
     }
   }
 
+  function requestEditorFocus(groupId: string, documentId: string) {
+    editorFocusTokenRef.current += 1;
+    setEditorFocusRequest({
+      groupId,
+      documentId,
+      token: editorFocusTokenRef.current
+    });
+  }
+
+  function showOperationError(error: unknown, fallback: string) {
+    const message = error instanceof Error ? error.message : fallback;
+    setStatusMessage(message);
+    setOperationErrorMessage(message);
+  }
+
+  function expandParentDirectories(path: string) {
+    const parts = path.split("/").filter(Boolean);
+    const parents = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
+    if (parents.length === 0) {
+      return;
+    }
+
+    setSidebarState((previous) => ({
+      ...previous,
+      expandedPaths: [...new Set([...previous.expandedPaths, ...parents])]
+    }));
+  }
+
+  function handleStartCreateTreeEntry(kind: "file" | "directory", parentPath: string | null) {
+    if (workspace.id !== sampleRoot.id && !window.electronAPI && !browserWorkspaceDirectoryHandleRef.current) {
+      setStatusMessage(
+        kind === "file"
+          ? "Reopen the workspace folder in this browser session to create files."
+          : "Reopen the workspace folder in this browser session to create folders."
+      );
+      return;
+    }
+
+    setRenamingTreeNodeId(null);
+    setPendingCreateTreeEntry({ kind, parentPath });
+    if (parentPath) {
+      setSidebarState((previous) => ({
+        ...previous,
+        expandedPaths: [...new Set([...previous.expandedPaths, parentPath])]
+      }));
+    }
+  }
+
+  async function confirmCreateTreeEntry(kind: "file" | "directory", parentPath: string | null, rawName: string) {
+    setPendingCreateTreeEntry(null);
+    const fallback = kind === "file" ? "untitled.txt" : "New Folder";
+    const name = normalizeRelativeEntryName(rawName, fallback);
+    if (!name) {
+      return;
+    }
+
+    const path = joinWorkspacePath(parentPath, name);
+    if (getExistingEntryPaths().has(path)) {
+      setStatusMessage(`${path} already exists.`);
+      return;
+    }
+
+    try {
+      if (kind === "file") {
+        const writeResult =
+          workspace.id === sampleRoot.id
+            ? { modifiedAt: new Date().toISOString(), size: 0 }
+            : await providerRegistry.local.createTextFile({
+                path,
+                absolutePath: getAbsolutePathForRelativePath(path)
+              });
+        const nextFile = createFileRecordFromPath(path, writeResult);
+        const nextFileMap = {
+          ...fileMapRef.current,
+          [nextFile.id]: nextFile
+        };
+
+        fileMapRef.current = nextFileMap;
+        setFileMap(nextFileMap);
+        setTree(rebuildTreeFromFileMap(nextFileMap, [...collectDirectoryPaths(tree)]));
+        setBufferMap((previous) =>
+          applyBufferPolicy({
+            ...previous,
+            [nextFile.id]: createBufferFromBody(nextFile, "")
+          }, [], "tree-create-file")
+        );
+        expandParentDirectories(path);
+        addTabToActiveGroup(nextFile.id, true, { promote: true, focus: true });
+        setSelectedTreeEntryId(nextFile.id);
+        setTreeSelectionCleared(false);
+        setStatusMessage(`Created ${nextFile.path}`);
+        return;
+      }
+
+      if (workspace.id !== sampleRoot.id) {
+        await providerRegistry.local.createDirectory({
+          path,
+          absolutePath: getAbsolutePathForRelativePath(path)
+        });
+      }
+
+      setTree((previous) => upsertDirectoryNode(previous, workspace, path));
+      expandParentDirectories(`${path}/placeholder`);
+      setStatusMessage(`Created ${path}`);
+    } catch (error) {
+      showOperationError(new Error(getCreateEntryErrorMessage(kind)), getCreateEntryErrorMessage(kind));
+    }
+  }
+
+  function handleCopyTreeEntry(node: FileTreeNode) {
+    setFileTreeClipboard(getEntryOperation(node));
+    setStatusMessage(`Copied ${node.path}`);
+  }
+
+  function handleSelectTreeEntry(entryId: string) {
+    setSelectedTreeEntryId(entryId);
+    setTreeSelectionCleared(false);
+  }
+
+  function handleClearTreeSelection() {
+    setSelectedTreeEntryId(null);
+    setTreeSelectionCleared(true);
+  }
+
+  async function copyTreeEntryToPath(source: FileTreeClipboardEntry, targetPath: string) {
+    if (source.kind === "directory" && isSameOrChildPath(targetPath, source.path)) {
+      setStatusMessage("A folder cannot be copied into itself.");
+      return;
+    }
+
+    try {
+      if (workspace.id !== sampleRoot.id) {
+        await providerRegistry.local.copyEntry(source, getEntryOperationForPath(targetPath, source.kind));
+      }
+
+      const now = new Date().toISOString();
+      const sourceFiles = Object.values(fileMapRef.current).filter((file) =>
+        source.kind === "directory" ? isSameOrChildPath(file.path, source.path) : file.path === source.path
+      );
+      const idMap = new Map<string, string>();
+      const nextFiles: WorkspaceFileRecord[] = [];
+
+      for (const sourceFile of sourceFiles) {
+        const nextPath =
+          source.kind === "directory"
+            ? `${targetPath}${sourceFile.path.slice(source.path.length)}`
+            : targetPath;
+        const nextId = getDocumentIdForPath(nextPath);
+        idMap.set(sourceFile.id, nextId);
+        const snapshot =
+          workspace.id === sampleRoot.id
+            ? null
+            : await providerRegistry.local.getSnapshot({
+                path: nextPath,
+                absolutePath: getAbsolutePathForRelativePath(nextPath)
+              });
+        const modifiedAt = snapshot?.modifiedAt ?? now;
+        const size = snapshot?.size ?? sourceFile.size;
+        const metadata = getLanguageMetadata(nextPath);
+        const pdf = nextPath.toLowerCase().endsWith(".pdf");
+        nextFiles.push(
+          normalizeFile({
+            ...sourceFile,
+            id: nextId,
+            path: nextPath,
+            name: getPathName(nextPath),
+            language: pdf ? "PDF" : metadata.label,
+            size,
+            modifiedAt,
+            lastSyncedModifiedAt: modifiedAt,
+            lastSyncedSize: size,
+            absolutePath: snapshot?.absolutePath ?? getAbsolutePathForRelativePath(nextPath),
+            conflictState: undefined,
+            foreignDrafts: [],
+            pendingForeignDraftCount: 0,
+            isMarkdown: !pdf && Boolean(metadata.markdown ?? isMarkdownPath(nextPath)),
+            isPdf: pdf,
+            unavailable: false
+          })
+        );
+      }
+
+      setFileMap((previous) => {
+        const next = { ...previous };
+        for (const file of nextFiles) {
+          next[file.id] = file;
+        }
+        const directoryPaths = [...collectDirectoryPaths(tree)];
+        if (source.kind === "directory") {
+          directoryPaths.push(targetPath);
+          for (const directoryPath of collectDirectoryPaths(tree)) {
+            if (isSameOrChildPath(directoryPath, source.path)) {
+              directoryPaths.push(`${targetPath}${directoryPath.slice(source.path.length)}`);
+            }
+          }
+        }
+        setTree(rebuildTreeFromFileMap(next, directoryPaths));
+        fileMapRef.current = next;
+        return next;
+      });
+      setBufferMap((previous) => {
+        const next = { ...previous };
+        for (const file of nextFiles) {
+          const sourceId = [...idMap.entries()].find(([, nextId]) => nextId === file.id)?.[0];
+          const sourceBuffer = sourceId ? previous[sourceId] : undefined;
+          if (sourceBuffer && !file.isPdf) {
+            next[file.id] = createBufferFromBody(file, sourceBuffer.cachedBody);
+          }
+        }
+        return applyBufferPolicy(next, [], "tree-copy-entry");
+      });
+      expandParentDirectories(targetPath);
+      setStatusMessage(`Copied ${source.path} to ${targetPath}`);
+    } catch (error) {
+      showOperationError(error, `Unable to copy ${source.path}.`);
+    }
+  }
+
+  async function handlePasteTreeEntry(targetDirectoryPath: string | null) {
+    if (!fileTreeClipboard) {
+      return;
+    }
+
+    const targetPath = getUniquePath(targetDirectoryPath, getPathName(fileTreeClipboard.path));
+    await copyTreeEntryToPath(fileTreeClipboard, targetPath);
+  }
+
+  async function handleDuplicateTreeEntry(node: FileTreeNode) {
+    const parentPath = getParentPath(node.path);
+    const targetPath = getUniquePath(parentPath, getPathName(node.path));
+    await copyTreeEntryToPath(getEntryOperation(node), targetPath);
+  }
+
+  function handleRenameTreeEntry(node: FileTreeNode) {
+    setRenamingTreeNodeId(node.id);
+    if (node.kind === "file") {
+      setSelectedTreeEntryId(node.id);
+      setTreeSelectionCleared(false);
+    }
+  }
+
+  async function confirmRenameTreeEntry(node: FileTreeNode, rawName: string) {
+    setRenamingTreeNodeId(null);
+    const nextName = normalizeRelativeEntryName(rawName, node.name);
+    if (!nextName || nextName === node.name) {
+      return;
+    }
+
+    const targetPath = joinWorkspacePath(getParentPath(node.path), nextName);
+    if (getExistingEntryPaths().has(targetPath)) {
+      setStatusMessage(`${targetPath} already exists.`);
+      return;
+    }
+
+    if (node.kind === "directory" && isSameOrChildPath(targetPath, node.path)) {
+      setStatusMessage("A folder cannot be moved into itself.");
+      return;
+    }
+
+    try {
+      if (workspace.id !== sampleRoot.id) {
+        await providerRegistry.local.moveEntry(getEntryOperation(node), getEntryOperationForPath(targetPath, node.kind));
+      }
+
+      const idMap = new Map<string, string>();
+      const nextFileMap: Record<string, WorkspaceFileRecord> = {};
+      for (const [documentId, file] of Object.entries(fileMapRef.current)) {
+        if (!isSameOrChildPath(file.path, node.path)) {
+          nextFileMap[documentId] = file;
+          continue;
+        }
+
+        const nextPath = node.kind === "directory" ? `${targetPath}${file.path.slice(node.path.length)}` : targetPath;
+        const nextId = getDocumentIdForPath(nextPath);
+        const metadata = getLanguageMetadata(nextPath);
+        const pdf = nextPath.toLowerCase().endsWith(".pdf");
+        idMap.set(documentId, nextId);
+        nextFileMap[nextId] = normalizeFile({
+          ...file,
+          id: nextId,
+          path: nextPath,
+          name: getPathName(nextPath),
+          language: pdf ? "PDF" : metadata.label,
+          absolutePath: getAbsolutePathForRelativePath(nextPath),
+          isMarkdown: !pdf && Boolean(metadata.markdown ?? isMarkdownPath(nextPath)),
+          isPdf: pdf
+        });
+      }
+
+      const nextDirectories = [...collectDirectoryPaths(tree)]
+        .filter((directoryPath) => !isSameOrChildPath(directoryPath, node.path))
+        .concat(
+          [...collectDirectoryPaths(tree)]
+            .filter((directoryPath) => isSameOrChildPath(directoryPath, node.path))
+            .map((directoryPath) => `${targetPath}${directoryPath.slice(node.path.length)}`)
+        );
+      fileMapRef.current = nextFileMap;
+      setFileMap(nextFileMap);
+      setBufferMap((previous) => applyBufferPolicy(remapBuffersForDocumentIdMap(previous, idMap), [], "tree-rename-entry"));
+      updateGroupsForDocumentIdMap(idMap);
+      setTree(rebuildTreeFromFileMap(nextFileMap, nextDirectories));
+      expandParentDirectories(targetPath);
+      setStatusMessage(`Renamed ${node.path} to ${targetPath}`);
+    } catch (error) {
+      showOperationError(error, `Unable to rename ${node.path}.`);
+    }
+  }
+
+  function handleDeleteTreeEntry(node: FileTreeNode) {
+    const affectedFiles = Object.values(fileMapRef.current).filter((file) =>
+      node.kind === "directory" ? isSameOrChildPath(file.path, node.path) : file.path === node.path
+    );
+    const dirtyCount = affectedFiles.filter((file) => bufferMapRef.current[file.id]?.dirty).length;
+    const descendantCount = countTreeDescendants(node);
+    const isNonEmptyFolder = node.kind === "directory" && descendantCount > 0;
+    const message = dirtyCount > 0
+      ? `This folder is not empty. Delete ${node.path} and discard ${dirtyCount} unsaved file${dirtyCount === 1 ? "" : "s"}?`
+      : isNonEmptyFolder
+        ? `This folder is not empty. Delete ${node.path} and all of its contents?`
+        : `Delete ${node.path}?`;
+
+    setPendingDeleteEntry({ node, message });
+  }
+
+  async function confirmDeleteTreeEntry(node: FileTreeNode) {
+    try {
+      if (workspace.id !== sampleRoot.id) {
+        await providerRegistry.local.deleteEntry(getEntryOperation(node));
+      }
+
+      const affectedFiles = Object.values(fileMapRef.current).filter((file) =>
+        node.kind === "directory" ? isSameOrChildPath(file.path, node.path) : file.path === node.path
+      );
+      const removedIds = new Set(affectedFiles.map((file) => file.id));
+      setFileMap((previous) => {
+        const next = { ...previous };
+        for (const id of removedIds) {
+          delete next[id];
+        }
+        fileMapRef.current = next;
+        return next;
+      });
+      setBufferMap((previous) => {
+        const next = { ...previous };
+        for (const id of removedIds) {
+          delete next[id];
+        }
+        return next;
+      });
+      setSelectedTreeEntryId((entryId) => (entryId && removedIds.has(entryId) ? null : entryId));
+      if (selectedTreeEntryId && removedIds.has(selectedTreeEntryId)) {
+        setTreeSelectionCleared(true);
+      }
+      filterGroupsByDocumentPredicate((documentId) => !removedIds.has(documentId));
+      setTree((previous) => removeTreePath(previous, node.path));
+      setStatusMessage(`Deleted ${node.path}`);
+    } catch (error) {
+      showOperationError(error, `Unable to delete ${node.path}.`);
+    }
+  }
+
+  function handleCopyTreePath(node: FileTreeNode) {
+    const absolutePath = node.absolutePath ?? getAbsolutePathForRelativePath(node.path);
+    if (absolutePath) {
+      navigator.clipboard.writeText(formatAbsolutePathForClipboard(absolutePath));
+      setStatusMessage(`Copied path for ${node.name}`);
+    }
+  }
+
+  function handleCopyTreeRelativePath(node: FileTreeNode) {
+    navigator.clipboard.writeText(node.path);
+    setStatusMessage(`Copied relative path for ${node.name}`);
+  }
+
+  async function handleRevealTreeEntry(node: FileTreeNode) {
+    try {
+      await providerRegistry.local.revealEntry(getEntryOperation(node));
+    } catch (error) {
+      showOperationError(error, `Unable to reveal ${node.path}.`);
+    }
+  }
+
   function handleUpdateDocument(nextValue: string) {
     if (!activeFile) {
       return;
@@ -2071,7 +2639,7 @@ export default function App() {
     });
   }
 
-  function addTabToActiveGroup(documentId: string, makeActive = false) {
+  function addTabToActiveGroup(documentId: string, makeActive = false, options: { promote?: boolean; focus?: boolean } = {}) {
     const targetGroupId = activeGroupId;
     setEditorGroups((groups) =>
       groups.map((group) => {
@@ -2080,13 +2648,17 @@ export default function App() {
         return {
           ...group,
           openTabs: nextTabs,
-          activeTabId: makeActive ? documentId : group.activeTabId
+          activeTabId: makeActive ? documentId : group.activeTabId,
+          previewTabId: options.promote && group.previewTabId === documentId ? null : group.previewTabId
         };
       })
     );
-    const file = fileMap[documentId];
+    const file = fileMapRef.current[documentId];
     if (file && !file.isPdf) {
       void ensureBuffer(documentId, makeActive ? "add-tab-active" : "add-tab-background");
+      if (options.focus) {
+        requestEditorFocus(targetGroupId, documentId);
+      }
     }
   }
 
@@ -2320,6 +2892,137 @@ export default function App() {
     return providerRegistry.local.writeText(document, content);
   }
 
+  function getDocumentIdForPath(path: string) {
+    return window.electronAPI ? `local:${path}` : `${workspace.id}:${path}`;
+  }
+
+  function getAbsolutePathForRelativePath(path: string) {
+    return workspace.rootPath ? `${workspace.rootPath}/${path}`.replaceAll("\\", "/") : undefined;
+  }
+
+  function getEntryOperation(node: FileTreeNode): WorkspaceEntryOperation {
+    return {
+      kind: node.kind,
+      path: node.path,
+      absolutePath: node.absolutePath ?? getAbsolutePathForRelativePath(node.path)
+    };
+  }
+
+  function getEntryOperationForPath(path: string, kind: "file" | "directory"): WorkspaceEntryOperation {
+    return {
+      kind,
+      path,
+      absolutePath: getAbsolutePathForRelativePath(path)
+    };
+  }
+
+  function getExistingEntryPaths() {
+    const paths = new Set(Object.values(fileMapRef.current).map((file) => file.path));
+    for (const directoryPath of collectDirectoryPaths(tree)) {
+      paths.add(directoryPath);
+    }
+    return paths;
+  }
+
+  function getUniquePath(parentPath: string | null, desiredName: string) {
+    const existingPaths = getExistingEntryPaths();
+    let candidateName = desiredName;
+    let candidatePath = joinWorkspacePath(parentPath, candidateName);
+    let index = 2;
+
+    while (existingPaths.has(candidatePath)) {
+      candidateName = index === 2 ? getCopiedName(desiredName) : getCopyNumberedName(desiredName, index);
+      candidatePath = joinWorkspacePath(parentPath, candidateName);
+      index += 1;
+    }
+
+    return candidatePath;
+  }
+
+  function createFileRecordFromPath(path: string, writeResult: { modifiedAt: string; size: number }): WorkspaceFileRecord {
+    const metadata = getLanguageMetadata(path);
+    const pdf = path.toLowerCase().endsWith(".pdf");
+    return normalizeFile({
+      id: getDocumentIdForPath(path),
+      workspaceId: workspace.id,
+      path,
+      name: getPathName(path),
+      provider: workspace.provider,
+      language: pdf ? "PDF" : metadata.label,
+      size: writeResult.size,
+      modifiedAt: writeResult.modifiedAt,
+      lastSyncedModifiedAt: writeResult.modifiedAt,
+      lastSyncedSize: writeResult.size,
+      foreignDrafts: [],
+      pendingForeignDraftCount: 0,
+      absolutePath: getAbsolutePathForRelativePath(path),
+      isMarkdown: !pdf && Boolean(metadata.markdown ?? isMarkdownPath(path)),
+      isPdf: pdf,
+      unavailable: false
+    });
+  }
+
+  function rebuildTreeFromFileMap(nextFileMap: Record<string, WorkspaceFileRecord>, preservedDirectories: string[] = []) {
+    let nextTree = buildTreeFromFiles(workspace, Object.values(nextFileMap));
+    for (const directoryPath of preservedDirectories) {
+      nextTree = upsertDirectoryNode(nextTree, workspace, directoryPath);
+    }
+    return nextTree;
+  }
+
+  function updateGroupsForDocumentIdMap(idMap: Map<string, string>) {
+    if (idMap.size === 0) {
+      return;
+    }
+
+    const mapDocumentId = (documentId: string) => idMap.get(documentId) ?? documentId;
+      setSelectedTreeEntryId((entryId) => (entryId ? mapDocumentId(entryId) : null));
+    setEditorGroups((groups) =>
+      groups.map((group) => {
+        const openTabs = group.openTabs.map(mapDocumentId);
+        return {
+          ...group,
+          openTabs,
+          activeTabId: group.activeTabId ? mapDocumentId(group.activeTabId) : null,
+          previewTabId: group.previewTabId ? mapDocumentId(group.previewTabId) : null
+        };
+      })
+    );
+    setCursorState((previous) => {
+      const next: typeof previous = {};
+      for (const [documentId, snapshot] of Object.entries(previous)) {
+        next[mapDocumentId(documentId)] = snapshot;
+      }
+      return next;
+    });
+    setPdfBlobEntries((previous) => {
+      const next: typeof previous = {};
+      for (const [documentId, entry] of Object.entries(previous)) {
+        next[mapDocumentId(documentId)] = entry;
+      }
+      return next;
+    });
+  }
+
+  function remapBuffersForDocumentIdMap(
+    sourceBufferMap: Record<string, DocumentBuffer>,
+    idMap: Map<string, string>
+  ) {
+    if (idMap.size === 0) {
+      return sourceBufferMap;
+    }
+
+    const nextBufferMap: Record<string, DocumentBuffer> = {};
+    for (const [documentId, buffer] of Object.entries(sourceBufferMap)) {
+      const nextDocumentId = idMap.get(documentId) ?? documentId;
+      nextBufferMap[nextDocumentId] = {
+        ...buffer,
+        documentId: nextDocumentId
+      };
+    }
+    return nextBufferMap;
+  }
+
   function createConflictCopyDocument(original: WorkspaceFileRecord, suffix: string, body: string) {
     const copyNameParts = original.name.split(".");
     const extension = copyNameParts.length > 1 ? `.${copyNameParts.pop()}` : "";
@@ -2493,7 +3196,10 @@ export default function App() {
       }
       snapshotCount = snapshots.length;
 
-      const snapshotByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]));
+      const fileSnapshots = snapshots.filter((snapshot) => snapshot.kind !== "directory");
+      const nextTree = buildTreeFromSnapshots(workspace, snapshots);
+      const directoryChanged = !areSetsEqual(collectDirectoryPaths(tree), collectDirectoryPaths(nextTree));
+      const snapshotByPath = new Map(fileSnapshots.map((snapshot) => [snapshot.path, snapshot]));
       const visibleFileIds = new Set(editorGroupsRef.current.map((group) => group.activeTabId).filter((value): value is string => Boolean(value)));
       const currentByPath = new Map(workspaceFiles.map((file) => [file.path, file]));
       const nextFileMap: Record<string, WorkspaceFileRecord> = { ...fileMapRef.current };
@@ -2579,7 +3285,7 @@ export default function App() {
         didChange = true;
       }
 
-      for (const snapshot of snapshots) {
+      for (const snapshot of fileSnapshots) {
         if (currentByPath.has(snapshot.path)) {
           continue;
         }
@@ -2609,6 +3315,10 @@ export default function App() {
         didChange = true;
       }
 
+      if (directoryChanged) {
+        didChange = true;
+      }
+
       if (!didChange) {
         return false;
       }
@@ -2630,7 +3340,7 @@ export default function App() {
 
       setFileMap(nextFileMap);
       setBufferMap(applyBufferPolicy(nextBufferMap));
-      setTree(buildTreeFromSnapshots(workspace, snapshots));
+      setTree(nextTree);
       filterGroupsByDocumentPredicate((documentId) => Boolean(nextFileMap[documentId]));
       setStatusMessage(`Detected workspace changes in ${workspace.displayName}.`);
       return true;
@@ -3624,12 +4334,31 @@ export default function App() {
           <FilesPanel
             workspaceName={workspace.displayName}
             tree={tree}
-            activeDocumentId={activeTabId}
+            activeEntryId={activeTreeEntryId}
             expandedPaths={sidebarState.expandedPaths}
             dirtyDocumentIds={dirtyDocumentIds}
+            canPaste={Boolean(fileTreeClipboard)}
+            creatingEntry={pendingCreateTreeEntry}
+            renamingNodeId={renamingTreeNodeId}
+            onClearSelection={handleClearTreeSelection}
+            onSelectEntry={handleSelectTreeEntry}
             onToggleExpand={handleToggleExpand}
             onOpenFile={(id) => handleActivateFile(id, { preview: true })}
             onOpenFilePermanent={handlePromoteTab}
+            onCreateFile={(parentPath) => handleStartCreateTreeEntry("file", parentPath)}
+            onCreateFolder={(parentPath) => handleStartCreateTreeEntry("directory", parentPath)}
+            onCommitCreateEntry={(kind, parentPath, name) => void confirmCreateTreeEntry(kind, parentPath, name)}
+            onCancelCreateEntry={() => setPendingCreateTreeEntry(null)}
+            onCopyEntry={handleCopyTreeEntry}
+            onPasteEntry={(targetDirectoryPath) => void handlePasteTreeEntry(targetDirectoryPath)}
+            onDuplicateEntry={(node) => void handleDuplicateTreeEntry(node)}
+            onRenameEntry={(node) => void handleRenameTreeEntry(node)}
+            onCommitRenameEntry={(node, name) => void confirmRenameTreeEntry(node, name)}
+            onCancelRenameEntry={() => setRenamingTreeNodeId(null)}
+            onDeleteEntry={(node) => void handleDeleteTreeEntry(node)}
+            onCopyPath={handleCopyTreePath}
+            onCopyRelativePath={handleCopyTreeRelativePath}
+            onRevealEntry={(node) => void handleRevealTreeEntry(node)}
             onOpenLocalWorkspace={handleOpenLocalWorkspace}
             onOpenSample={handleOpenSampleWorkspace}
           />
@@ -3802,6 +4531,14 @@ export default function App() {
                 showMergeReview={showMergeReview}
                 resolvedTheme={resolvedTheme}
                 previewOpen={layout.previewOpen}
+                focusRequest={
+                  editorFocusRequest?.groupId === group.id
+                    ? {
+                        documentId: editorFocusRequest.documentId,
+                        token: editorFocusRequest.token
+                      }
+                    : null
+                }
                 pdfUrl={pdfEntry?.url ?? null}
                 pdfError={pdfEntry?.error ?? null}
                 tabDrag={tabDrag}
@@ -3878,6 +4615,24 @@ export default function App() {
           onApply={() => void handleApplyCompareSelections()}
           onCancel={() => setSessionCompareItems(null)}
         />
+      ) : null}
+
+      {pendingDeleteEntry ? (
+        <ConfirmationDialog
+          message={pendingDeleteEntry.message}
+          confirmLabel="Delete"
+          destructive={true}
+          onCancel={() => setPendingDeleteEntry(null)}
+          onConfirm={() => {
+            const entry = pendingDeleteEntry;
+            setPendingDeleteEntry(null);
+            void confirmDeleteTreeEntry(entry.node);
+          }}
+        />
+      ) : null}
+
+      {operationErrorMessage ? (
+        <MessageDialog message={operationErrorMessage} onClose={() => setOperationErrorMessage(null)} />
       ) : null}
 
       {diskConflict ? (

@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   AlertCircle,
   Braces,
@@ -8,11 +8,17 @@ import {
   ChevronRight,
   Circle,
   Cloud,
+  ClipboardPaste,
+  Copy,
+  ExternalLink,
   FileCode,
   FileJson,
+  FilePlus,
   FileText,
   FileType,
+  Files,
   Folder,
+  FolderPlus,
   FolderOpen,
   History,
   Image,
@@ -29,6 +35,8 @@ import {
   Sun,
   Monitor,
   Moon,
+  Pencil,
+  Trash2,
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -352,22 +360,123 @@ export function SidebarPanel(props: SidebarPanelProps) {
 interface FilesPanelProps {
   workspaceName: string;
   tree: FileTreeNode[];
-  activeDocumentId: string | null;
+  activeEntryId: string | null;
   expandedPaths: string[];
   dirtyDocumentIds: Set<string>;
+  canPaste: boolean;
+  creatingEntry: { kind: "file" | "directory"; parentPath: string | null } | null;
+  renamingNodeId: string | null;
+  onClearSelection: () => void;
+  onSelectEntry: (entryId: string) => void;
   onToggleExpand: (path: string) => void;
   onOpenFile: (path: string) => void;
   onOpenFilePermanent: (path: string) => void;
+  onCreateFile: (parentPath: string | null) => void;
+  onCreateFolder: (parentPath: string | null) => void;
+  onCommitCreateEntry: (kind: "file" | "directory", parentPath: string | null, name: string) => void;
+  onCancelCreateEntry: () => void;
+  onCopyEntry: (node: FileTreeNode) => void;
+  onPasteEntry: (targetDirectoryPath: string | null) => void;
+  onDuplicateEntry: (node: FileTreeNode) => void;
+  onRenameEntry: (node: FileTreeNode) => void;
+  onCommitRenameEntry: (node: FileTreeNode, name: string) => void;
+  onCancelRenameEntry: () => void;
+  onDeleteEntry: (node: FileTreeNode) => void;
+  onCopyPath: (node: FileTreeNode) => void;
+  onCopyRelativePath: (node: FileTreeNode) => void;
+  onRevealEntry: (node: FileTreeNode) => void;
   onOpenLocalWorkspace: () => void;
   onOpenSample: () => void;
 }
 
 export function FilesPanel(props: FilesPanelProps) {
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    node: FileTreeNode | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [contextMenu]);
+
+  const runContextAction = (action: () => void) => {
+    action();
+    setContextMenu(null);
+  };
+
+  const contextNode = contextMenu?.node ?? null;
+  const contextDirectoryPath =
+    contextNode?.kind === "directory"
+      ? contextNode.path
+      : contextNode?.parentPath ?? (contextNode?.path.includes("/") ? contextNode.path.slice(0, contextNode.path.lastIndexOf("/")) : null);
+  const rootDirectories = props.tree.filter((node) => node.kind === "directory");
+  const rootFiles = props.tree.filter((node) => node.kind === "file");
+  const rootCreateRow =
+    props.creatingEntry?.parentPath === null ? (
+      <CreateTreeEntryRow
+        kind={props.creatingEntry.kind}
+        parentPath={null}
+        depth={0}
+        onCommit={props.onCommitCreateEntry}
+        onCancel={props.onCancelCreateEntry}
+      />
+    ) : null;
+  const renderRootNode = (node: FileTreeNode) => (
+    <TreeRow
+      key={node.id}
+      node={node}
+      depth={0}
+      activeEntryId={props.activeEntryId}
+      expandedPaths={props.expandedPaths}
+      dirtyDocumentIds={props.dirtyDocumentIds}
+      creatingEntry={props.creatingEntry}
+      renamingNodeId={props.renamingNodeId}
+      onToggleExpand={props.onToggleExpand}
+      onSelectEntry={props.onSelectEntry}
+      onOpenFile={props.onOpenFile}
+      onOpenFilePermanent={props.onOpenFilePermanent}
+      onCommitCreateEntry={props.onCommitCreateEntry}
+      onCancelCreateEntry={props.onCancelCreateEntry}
+      onCommitRenameEntry={props.onCommitRenameEntry}
+      onCancelRenameEntry={props.onCancelRenameEntry}
+      onOpenContextMenu={(targetNode, event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        props.onSelectEntry(targetNode.id);
+        setContextMenu({ x: event.clientX, y: event.clientY, node: targetNode });
+      }}
+    />
+  );
+
   return (
     <SidebarPanel
       title={props.workspaceName || "Explorer"}
       headerActions={
         <>
+          <button
+            type="button"
+            className="sidebar__icon-button"
+            title="New file"
+            onClick={() => props.onCreateFile(null)}
+          >
+            <FilePlus size={14} />
+          </button>
+          <button
+            type="button"
+            className="sidebar__icon-button"
+            title="New folder"
+            onClick={() => props.onCreateFolder(null)}
+          >
+            <FolderPlus size={14} />
+          </button>
           <button
             type="button"
             className="sidebar__icon-button"
@@ -388,24 +497,108 @@ export function FilesPanel(props: FilesPanelProps) {
       }
     >
       {props.tree.length === 0 ? (
-        <p className="tree__empty">No files in this workspace.</p>
+        <div
+          className="tree"
+          role="tree"
+          onMouseDown={() => props.onClearSelection()}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            props.onClearSelection();
+            setContextMenu({ x: event.clientX, y: event.clientY, node: null });
+          }}
+        >
+          {rootCreateRow ?? (
+            <p className="tree__empty">No files in this workspace.</p>
+          )}
+        </div>
       ) : (
-        <div className="tree" role="tree">
-          {props.tree.map((node) => (
-            <TreeRow
-              key={node.id}
-              node={node}
-              depth={0}
-              activeDocumentId={props.activeDocumentId}
-              expandedPaths={props.expandedPaths}
-              dirtyDocumentIds={props.dirtyDocumentIds}
-              onToggleExpand={props.onToggleExpand}
-              onOpenFile={props.onOpenFile}
-              onOpenFilePermanent={props.onOpenFilePermanent}
-            />
-          ))}
+        <div
+          className="tree"
+          role="tree"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) props.onClearSelection();
+          }}
+          onContextMenu={(event) => {
+            if (event.target !== event.currentTarget) return;
+            event.preventDefault();
+            props.onClearSelection();
+            setContextMenu({ x: event.clientX, y: event.clientY, node: null });
+          }}
+        >
+          {rootCreateRow && props.creatingEntry?.kind === "directory" ? rootCreateRow : null}
+          {rootDirectories.map(renderRootNode)}
+          {rootCreateRow && props.creatingEntry?.kind === "file" ? rootCreateRow : null}
+          {rootFiles.map(renderRootNode)}
         </div>
       )}
+      {contextMenu ? (
+        <>
+          <div className="context-menu-backdrop" onMouseDown={() => setContextMenu(null)} />
+          <div className="context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+            {contextNode?.kind === "file" ? (
+              <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onOpenFilePermanent(contextNode.id))}>
+                <FileText size={13} />
+                <span className="menu__label">Open</span>
+              </button>
+            ) : null}
+            <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onCreateFile(contextDirectoryPath))}>
+              <FilePlus size={13} />
+              <span className="menu__label">New File</span>
+            </button>
+            <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onCreateFolder(contextDirectoryPath))}>
+              <FolderPlus size={13} />
+              <span className="menu__label">New Folder</span>
+            </button>
+            <button
+              type="button"
+              className="menu__item"
+              disabled={!props.canPaste}
+              onClick={() => runContextAction(() => props.onPasteEntry(contextDirectoryPath))}
+            >
+              <ClipboardPaste size={13} />
+              <span className="menu__label">Paste</span>
+            </button>
+            {contextNode ? (
+              <>
+                <div className="menu__divider" />
+                <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onCopyEntry(contextNode))}>
+                  <Copy size={13} />
+                  <span className="menu__label">Copy</span>
+                </button>
+                <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onDuplicateEntry(contextNode))}>
+                  <Files size={13} />
+                  <span className="menu__label">Duplicate</span>
+                </button>
+                <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onRenameEntry(contextNode))}>
+                  <Pencil size={13} />
+                  <span className="menu__label">Rename</span>
+                </button>
+                <button type="button" className="menu__item menu__item--danger" onClick={() => runContextAction(() => props.onDeleteEntry(contextNode))}>
+                  <Trash2 size={13} />
+                  <span className="menu__label">Delete</span>
+                </button>
+                <div className="menu__divider" />
+                {contextNode.absolutePath ? (
+                  <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onCopyPath(contextNode))}>
+                    <Copy size={13} />
+                    <span className="menu__label">Copy Path</span>
+                  </button>
+                ) : null}
+                <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onCopyRelativePath(contextNode))}>
+                  <Copy size={13} />
+                  <span className="menu__label">Copy Relative Path</span>
+                </button>
+                {window.electronAPI && contextNode.absolutePath ? (
+                  <button type="button" className="menu__item" onClick={() => runContextAction(() => props.onRevealEntry(contextNode))}>
+                    <ExternalLink size={13} />
+                    <span className="menu__label">Reveal in File Explorer</span>
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </SidebarPanel>
   );
 }
@@ -413,12 +606,82 @@ export function FilesPanel(props: FilesPanelProps) {
 interface TreeRowProps {
   node: FileTreeNode;
   depth: number;
-  activeDocumentId: string | null;
+  activeEntryId: string | null;
   expandedPaths: string[];
   dirtyDocumentIds: Set<string>;
+  creatingEntry: { kind: "file" | "directory"; parentPath: string | null } | null;
+  renamingNodeId: string | null;
   onToggleExpand: (path: string) => void;
+  onSelectEntry: (entryId: string) => void;
   onOpenFile: (path: string) => void;
   onOpenFilePermanent: (path: string) => void;
+  onCommitCreateEntry: (kind: "file" | "directory", parentPath: string | null, name: string) => void;
+  onCancelCreateEntry: () => void;
+  onCommitRenameEntry: (node: FileTreeNode, name: string) => void;
+  onCancelRenameEntry: () => void;
+  onOpenContextMenu: (node: FileTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => void;
+}
+
+interface CreateTreeEntryRowProps {
+  kind: "file" | "directory";
+  parentPath: string | null;
+  depth: number;
+  onCommit: (kind: "file" | "directory", parentPath: string | null, name: string) => void;
+  onCancel: () => void;
+}
+
+function CreateTreeEntryRow(props: CreateTreeEntryRowProps) {
+  const placeholder = props.kind === "file" ? "New file" : "New folder";
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const committedRef = useRef(false);
+  const indent = 8 + props.depth * 14 + (props.kind === "file" ? 16 : 0);
+  const Icon = props.kind === "file" ? FileType : Folder;
+
+  useEffect(() => {
+    committedRef.current = false;
+    setValue("");
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }, [props.parentPath, props.kind]);
+
+  const commit = () => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    const name = value.trim();
+    if (!name) {
+      props.onCancel();
+      return;
+    }
+    props.onCommit(props.kind, props.parentPath, name);
+  };
+
+  return (
+    <div className="tree__row" style={{ paddingLeft: `${indent}px` }}>
+      {props.kind === "directory" ? <span className="tree__row-chevron" /> : null}
+      <span className="tree__row-icon">
+        <Icon size={14} />
+      </span>
+      <input
+        ref={inputRef}
+        className="tree__rename-input"
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") {
+            committedRef.current = true;
+            props.onCancel();
+          }
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
 }
 
 const TreeRow = memo(TreeRowImpl);
@@ -427,15 +690,108 @@ function TreeRowImpl(props: TreeRowProps) {
   const { node, depth } = props;
   const expanded = props.expandedPaths.includes(node.path);
   const indent = 8 + depth * 14;
+  const isRenaming = props.renamingNodeId === node.id;
+  const isActive = props.activeEntryId === node.id;
+  const [renameValue, setRenameValue] = useState(node.name);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const renameCommittedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isRenaming) return;
+    renameCommittedRef.current = false;
+    setRenameValue(node.name);
+    requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  }, [isRenaming, node.name]);
+
+  const commitRename = () => {
+    if (renameCommittedRef.current) return;
+    renameCommittedRef.current = true;
+    const nextName = renameValue.trim();
+    if (!nextName || nextName === node.name) {
+      props.onCancelRenameEntry();
+      return;
+    }
+    props.onCommitRenameEntry(node, nextName);
+  };
 
   if (node.kind === "directory") {
+    const childDirectories = (node.children ?? []).filter((child) => child.kind === "directory");
+    const childFiles = (node.children ?? []).filter((child) => child.kind === "file");
+    const childCreateRow =
+      expanded && props.creatingEntry?.parentPath === node.path ? (
+        <CreateTreeEntryRow
+          kind={props.creatingEntry.kind}
+          parentPath={node.path}
+          depth={depth + 1}
+          onCommit={props.onCommitCreateEntry}
+          onCancel={props.onCancelCreateEntry}
+        />
+      ) : null;
+    const renderChild = (child: FileTreeNode) => (
+      <TreeRow
+        key={child.id}
+        node={child}
+        depth={depth + 1}
+        activeEntryId={props.activeEntryId}
+        expandedPaths={props.expandedPaths}
+        dirtyDocumentIds={props.dirtyDocumentIds}
+        creatingEntry={props.creatingEntry}
+        renamingNodeId={props.renamingNodeId}
+        onToggleExpand={props.onToggleExpand}
+        onSelectEntry={props.onSelectEntry}
+        onOpenFile={props.onOpenFile}
+        onOpenFilePermanent={props.onOpenFilePermanent}
+        onCommitCreateEntry={props.onCommitCreateEntry}
+        onCancelCreateEntry={props.onCancelCreateEntry}
+        onCommitRenameEntry={props.onCommitRenameEntry}
+        onCancelRenameEntry={props.onCancelRenameEntry}
+        onOpenContextMenu={props.onOpenContextMenu}
+      />
+    );
+
+    if (isRenaming) {
+      return (
+        <div className={`tree__row ${isActive ? "tree__row--active" : ""}`} style={{ paddingLeft: `${indent}px` }}>
+          <span className="tree__row-chevron">
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          <span className="tree__row-icon">
+            {expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
+          </span>
+          <input
+            ref={renameInputRef}
+            className="tree__rename-input"
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") commitRename();
+              if (event.key === "Escape") {
+                renameCommittedRef.current = true;
+                props.onCancelRenameEntry();
+              }
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          />
+        </div>
+      );
+    }
+
     return (
       <>
         <button
           type="button"
-          className="tree__row"
+          className={`tree__row ${isActive ? "tree__row--active" : ""}`}
           style={{ paddingLeft: `${indent}px` }}
-          onClick={() => props.onToggleExpand(node.path)}
+          onClick={() => {
+            props.onSelectEntry(node.id);
+            props.onToggleExpand(node.path);
+          }}
+          onContextMenu={(event) => props.onOpenContextMenu(node, event)}
         >
           <span className="tree__row-chevron">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -445,27 +801,42 @@ function TreeRowImpl(props: TreeRowProps) {
           </span>
           <span className="tree__row-label">{node.name}</span>
         </button>
-        {expanded &&
-          node.children?.map((child) => (
-            <TreeRow
-              key={child.id}
-              node={child}
-              depth={depth + 1}
-              activeDocumentId={props.activeDocumentId}
-              expandedPaths={props.expandedPaths}
-              dirtyDocumentIds={props.dirtyDocumentIds}
-              onToggleExpand={props.onToggleExpand}
-              onOpenFile={props.onOpenFile}
-              onOpenFilePermanent={props.onOpenFilePermanent}
-            />
-          ))}
+        {expanded && childCreateRow && props.creatingEntry?.kind === "directory" ? childCreateRow : null}
+        {expanded ? childDirectories.map(renderChild) : null}
+        {expanded && childCreateRow && props.creatingEntry?.kind === "file" ? childCreateRow : null}
+        {expanded ? childFiles.map(renderChild) : null}
       </>
     );
   }
 
   const FileIcon = getFileIcon(node.name);
-  const isActive = props.activeDocumentId === node.id;
   const isDirty = props.dirtyDocumentIds.has(node.id);
+
+  if (isRenaming) {
+    return (
+      <div className={`tree__row ${isActive ? "tree__row--active" : ""}`} style={{ paddingLeft: `${indent + 16}px` }}>
+        <span className="tree__row-icon">
+          <FileIcon size={14} />
+        </span>
+        <input
+          ref={renameInputRef}
+          className="tree__rename-input"
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commitRename();
+            if (event.key === "Escape") {
+              renameCommittedRef.current = true;
+              props.onCancelRenameEntry();
+            }
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        />
+      </div>
+    );
+  }
 
   return (
     <button
@@ -474,6 +845,7 @@ function TreeRowImpl(props: TreeRowProps) {
       style={{ paddingLeft: `${indent + 16}px` }}
       onClick={() => props.onOpenFile(node.id)}
       onDoubleClick={() => props.onOpenFilePermanent(node.id)}
+      onContextMenu={(event) => props.onOpenContextMenu(node, event)}
     >
       <span className="tree__row-icon">
         <FileIcon size={14} />
@@ -1301,6 +1673,66 @@ interface WorkspaceFileConflictDialogProps {
   onKeepLocal: () => void;
   onUseDisk: () => void;
   onSaveCopy: () => void;
+}
+
+interface ConfirmationDialogProps {
+  message: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export function ConfirmationDialog(props: ConfirmationDialogProps) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal>
+      <div className="modal">
+        <div className="modal__simple-body">
+          <p>{props.message}</p>
+        </div>
+        <div className="modal__actions">
+          <button type="button" className="button button--ghost" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={`button ${props.destructive ? "button--danger" : ""}`}
+            onClick={props.onConfirm}
+          >
+            {props.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface MessageDialogProps {
+  message: string;
+  onClose: () => void;
+}
+
+export function MessageDialog(props: MessageDialogProps) {
+  const okButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    okButtonRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal>
+      <div className="modal">
+        <div className="modal__simple-body">
+          <p>{props.message}</p>
+        </div>
+        <div className="modal__actions">
+          <button ref={okButtonRef} type="button" className="button" onClick={props.onClose}>
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function WorkspaceFileConflictDialog(props: WorkspaceFileConflictDialogProps) {

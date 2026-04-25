@@ -1,6 +1,11 @@
 import { CLOUD_PROVIDER_LABELS } from "../constants";
 import {
+  copyBrowserEntry,
+  createBrowserDirectory,
+  createBrowserTextFile,
+  deleteBrowserEntry,
   getBrowserFileSnapshot,
+  moveBrowserEntry,
   readBrowserBinaryFile,
   readBrowserText,
   scanBrowserWorkspace,
@@ -13,6 +18,7 @@ import type {
   ProviderId,
   ProviderStatus,
   WorkspaceFileRecord,
+  WorkspaceEntryOperation,
   WorkspaceFileSnapshot
 } from "../types";
 
@@ -75,6 +81,12 @@ export interface LocalWorkspaceIoProvider {
   readText: (document: FileLocator) => Promise<string>;
   readBlob: (document: FileLocator, mimeType?: string) => Promise<Blob>;
   writeText: (document: FileLocator, content: string) => Promise<FileWriteResult>;
+  createTextFile: (entry: FileLocator, content?: string) => Promise<FileWriteResult>;
+  createDirectory: (entry: FileLocator) => Promise<boolean>;
+  deleteEntry: (entry: WorkspaceEntryOperation) => Promise<boolean>;
+  moveEntry: (source: WorkspaceEntryOperation, target: WorkspaceEntryOperation) => Promise<boolean>;
+  copyEntry: (source: WorkspaceEntryOperation, target: WorkspaceEntryOperation) => Promise<boolean>;
+  revealEntry: (entry: WorkspaceEntryOperation) => Promise<boolean>;
   getSnapshot: (document: FileLocator) => Promise<WorkspaceFileSnapshot | null>;
   scanWorkspace: (rootPath?: string, skippedFolders?: string[]) => Promise<WorkspaceFileSnapshot[]>;
 }
@@ -154,6 +166,90 @@ export function createProviderRegistry(context: ProviderRuntimeContext): Provide
         }
 
         throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async createTextFile(entry, content = "") {
+        if (context.electronAPI && entry.absolutePath) {
+          return context.electronAPI.createFile(entry.absolutePath, content);
+        }
+
+        if (context.browserWorkspaceDirectoryHandleRef.current) {
+          return createBrowserTextFile(
+            context.browserWorkspaceDirectoryHandleRef.current,
+            context.browserWorkspaceFileHandlesRef.current,
+            entry.path,
+            content
+          );
+        }
+
+        throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async createDirectory(entry) {
+        if (context.electronAPI && entry.absolutePath) {
+          return context.electronAPI.createDirectory(entry.absolutePath);
+        }
+
+        if (context.browserWorkspaceDirectoryHandleRef.current) {
+          return createBrowserDirectory(context.browserWorkspaceDirectoryHandleRef.current, entry.path);
+        }
+
+        throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async deleteEntry(entry) {
+        if (context.electronAPI && entry.absolutePath) {
+          return context.electronAPI.deleteEntry(entry.absolutePath);
+        }
+
+        if (context.browserWorkspaceDirectoryHandleRef.current) {
+          return deleteBrowserEntry(
+            context.browserWorkspaceDirectoryHandleRef.current,
+            context.browserWorkspaceFileHandlesRef.current,
+            entry.path,
+            entry.kind
+          );
+        }
+
+        throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async moveEntry(source, target) {
+        if (context.electronAPI && source.absolutePath && target.absolutePath) {
+          return context.electronAPI.moveEntry(source.absolutePath, target.absolutePath);
+        }
+
+        if (context.browserWorkspaceDirectoryHandleRef.current) {
+          return moveBrowserEntry(
+            context.browserWorkspaceDirectoryHandleRef.current,
+            context.browserWorkspaceFileHandlesRef.current,
+            source.path,
+            target.path,
+            source.kind
+          );
+        }
+
+        throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async copyEntry(source, target) {
+        if (context.electronAPI && source.absolutePath && target.absolutePath) {
+          return context.electronAPI.copyEntry(source.absolutePath, target.absolutePath);
+        }
+
+        if (context.browserWorkspaceDirectoryHandleRef.current) {
+          return copyBrowserEntry(
+            context.browserWorkspaceDirectoryHandleRef.current,
+            context.browserWorkspaceFileHandlesRef.current,
+            source.path,
+            target.path,
+            source.kind
+          );
+        }
+
+        throw new Error("This workspace is not writable in the current runtime.");
+      },
+      async revealEntry(entry) {
+        if (context.electronAPI && entry.absolutePath) {
+          return context.electronAPI.revealEntry(entry.absolutePath);
+        }
+
+        return false;
       },
       async getSnapshot(document) {
         if (context.electronAPI && document.absolutePath) {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const {
@@ -135,6 +135,22 @@ function assertInsideRegisteredRoot(absolutePath) {
     throw new Error(`Refused to access path outside the registered workspace: ${absolutePath}`);
   }
   return absolutePath;
+}
+
+function assertInsideRegisteredWorkspaceRoot(absolutePath) {
+  if (typeof absolutePath !== "string" || !absolutePath.trim()) {
+    throw new Error("Path is required.");
+  }
+  if (!isUnderAnyRegisteredRoot(absolutePath, [registeredWorkspaceRoots])) {
+    throw new Error(`Refused to access path outside the registered workspace: ${absolutePath}`);
+  }
+  return absolutePath;
+}
+
+function assertNotRegisteredWorkspaceRoot(absolutePath) {
+  if (isRegisteredWorkspaceRoot(absolutePath)) {
+    throw new Error("The workspace root cannot be changed from the file tree.");
+  }
 }
 
 function isRegisteredWorkspaceRoot(absolutePath) {
@@ -565,6 +581,15 @@ async function scanDirectoryMetadata(rootPath, currentPath, skippedFolders = [],
           continue;
         }
 
+        const stat = await fs.stat(absolutePath);
+        snapshots.push({
+          kind: "directory",
+          path: relativePath,
+          absolutePath: normalizePath(absolutePath),
+          modifiedAt: stat.mtime.toISOString(),
+          size: 0,
+          exists: true
+        });
         snapshots.push(...(await scanDirectoryMetadata(rootPath, absolutePath, skippedFolders, depth + 1)));
         continue;
       }
@@ -576,6 +601,7 @@ async function scanDirectoryMetadata(rootPath, currentPath, skippedFolders = [],
 
       const stat = await fs.stat(absolutePath);
       snapshots.push({
+        kind: "file",
         path: relativePath,
         absolutePath: normalizePath(absolutePath),
         modifiedAt: stat.mtime.toISOString(),
@@ -1342,6 +1368,72 @@ ipcMain.handle("local:write-file", async (_event, absolutePath, content) => {
     modifiedAt: stat.mtime.toISOString(),
     size: stat.size
   };
+});
+
+ipcMain.handle("local:create-file", async (_event, absolutePath, content = "") => {
+  assertInsideRegisteredWorkspaceRoot(absolutePath);
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  const handle = await fs.open(absolutePath, "wx");
+  try {
+    await handle.writeFile(typeof content === "string" ? content : "", "utf8");
+  } finally {
+    await handle.close();
+  }
+  const stat = await fs.stat(absolutePath);
+  return {
+    modifiedAt: stat.mtime.toISOString(),
+    size: stat.size
+  };
+});
+
+ipcMain.handle("local:create-directory", async (_event, absolutePath) => {
+  assertInsideRegisteredWorkspaceRoot(absolutePath);
+  await fs.mkdir(absolutePath, { recursive: false });
+  return true;
+});
+
+ipcMain.handle("local:delete-entry", async (_event, absolutePath) => {
+  assertInsideRegisteredWorkspaceRoot(absolutePath);
+  assertNotRegisteredWorkspaceRoot(absolutePath);
+  await fs.rm(absolutePath, { recursive: true, force: false });
+  return true;
+});
+
+ipcMain.handle("local:move-entry", async (_event, sourceAbsolutePath, targetAbsolutePath) => {
+  assertInsideRegisteredWorkspaceRoot(sourceAbsolutePath);
+  assertInsideRegisteredWorkspaceRoot(targetAbsolutePath);
+  assertNotRegisteredWorkspaceRoot(sourceAbsolutePath);
+  const canonicalSource = canonicalizeForRegistry(sourceAbsolutePath);
+  const canonicalTarget = canonicalizeForRegistry(targetAbsolutePath);
+  if (canonicalTarget.startsWith(`${canonicalSource}/`)) {
+    throw new Error("A folder cannot be moved into itself.");
+  }
+  await fs.mkdir(path.dirname(targetAbsolutePath), { recursive: true });
+  await fs.rename(sourceAbsolutePath, targetAbsolutePath);
+  return true;
+});
+
+ipcMain.handle("local:copy-entry", async (_event, sourceAbsolutePath, targetAbsolutePath) => {
+  assertInsideRegisteredWorkspaceRoot(sourceAbsolutePath);
+  assertInsideRegisteredWorkspaceRoot(targetAbsolutePath);
+  const canonicalSource = canonicalizeForRegistry(sourceAbsolutePath);
+  const canonicalTarget = canonicalizeForRegistry(targetAbsolutePath);
+  if (canonicalTarget.startsWith(`${canonicalSource}/`)) {
+    throw new Error("A folder cannot be copied into itself.");
+  }
+  await fs.mkdir(path.dirname(targetAbsolutePath), { recursive: true });
+  await fs.cp(sourceAbsolutePath, targetAbsolutePath, {
+    recursive: true,
+    errorOnExist: true,
+    force: false
+  });
+  return true;
+});
+
+ipcMain.handle("local:reveal-entry", async (_event, absolutePath) => {
+  assertInsideRegisteredWorkspaceRoot(absolutePath);
+  shell.showItemInFolder(absolutePath);
+  return true;
 });
 
 ipcMain.handle("local:write-json", async (_event, absolutePath, payload) => {

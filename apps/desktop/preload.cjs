@@ -23,6 +23,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   readFileBytes: (absolutePath) => ipcRenderer.invoke("local:read-file-bytes", absolutePath),
   writeFile: (absolutePath, content) =>
     ipcRenderer.invoke("local:write-file", absolutePath, content),
+  createFile: (absolutePath, content) =>
+    ipcRenderer.invoke("local:create-file", absolutePath, content),
+  createDirectory: (absolutePath) => ipcRenderer.invoke("local:create-directory", absolutePath),
+  deleteEntry: (absolutePath) => ipcRenderer.invoke("local:delete-entry", absolutePath),
+  moveEntry: (sourceAbsolutePath, targetAbsolutePath) =>
+    ipcRenderer.invoke("local:move-entry", sourceAbsolutePath, targetAbsolutePath),
+  copyEntry: (sourceAbsolutePath, targetAbsolutePath) =>
+    ipcRenderer.invoke("local:copy-entry", sourceAbsolutePath, targetAbsolutePath),
+  revealEntry: (absolutePath) => ipcRenderer.invoke("local:reveal-entry", absolutePath),
   writeJson: (absolutePath, payload) =>
     ipcRenderer.invoke("local:write-json", absolutePath, payload),
   readJson: (absolutePath) => ipcRenderer.invoke("local:read-json", absolutePath),
