@@ -7,13 +7,26 @@ All notable project changes are documented here.
 ### Added
 
 - **Tab context menu**: Right-click any editor tab to access Close, Close Others, Close to the Right, Close Saved, Close All, Copy Relative Path, Split Right, and Keep Open (for preview tabs).
+- **Explorer file and folder context menu**: Right-click files, folders, or empty Explorer space to create files/folders, copy, paste, duplicate, rename, delete, copy paths, and reveal entries in the system file manager where supported.
+- **Inline Explorer create and rename**: New File, New Folder, and Rename now edit directly in the file tree instead of using native dialogs. Blank inline create inputs cancel without creating anything.
+- **Recursive folder delete confirmation**: Deleting a non-empty folder now warns that all contents will be removed, including a stronger warning when unsaved files would be discarded.
+- **Folder-aware workspace polling**: Background workspace scans now include directories, so externally created or deleted folders, including empty folders, refresh in the Explorer.
 - **Copy Path** (desktop only): Copies the full filesystem path of a file to the clipboard via the tab context menu.
 - **Copy Relative Path**: Copies the workspace-relative path of a file to the clipboard via the tab context menu. Available on both browser and desktop.
 - Disabled states for context menu actions that don't apply (e.g. Close to the Right on the rightmost tab, Close Saved when all tabs have unsaved changes).
 
+### Changed
+
+- Explorer selection now supports both files and folders, including right-click selection before opening the context menu and clearing selection when clicking empty tree space.
+- New files created from the Explorer open immediately as promoted editor tabs and focus the editor so typing can start right away.
+- File and folder operation errors now use concise in-app dialogs instead of exposing raw filesystem exceptions.
+
 ### Fixed
 
 - Workspace bug fixes.
+- Folder creation, folder deletion, and external folder changes now keep the Explorer tree in sync.
+- Rename no longer depends on a native prompt dialog and works through the inline tree editing flow.
+- Error dialogs focus their OK button on open so Enter dismisses them.
 
 ## [0.2.0] - 2026-04-21
 
