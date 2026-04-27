@@ -4,6 +4,23 @@ const scanProgressChannel = "local:open-directory:progress";
 
 contextBridge.exposeInMainWorld("electronAPI", {
   setWindowTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
+  confirmClose: () => ipcRenderer.invoke("window:confirm-close"),
+  onCloseRequested: (listener) => {
+    if (typeof listener !== "function") {
+      return () => {};
+    }
+
+    const forward = () => {
+      try {
+        listener();
+      } catch {
+        // Swallow listener errors so main-process IPC stays healthy.
+      }
+    };
+
+    ipcRenderer.on("window:close-requested", forward);
+    return () => ipcRenderer.removeListener("window:close-requested", forward);
+  },
   openDirectory: (scanId) => ipcRenderer.invoke("local:open-directory", scanId),
   openDirectoryByPath: (absolutePath, scanId) =>
     ipcRenderer.invoke("local:open-directory-by-path", absolutePath, scanId),

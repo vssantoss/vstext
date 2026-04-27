@@ -9,8 +9,10 @@ import {
   MessageDialog,
   ProvidersPanel,
   SearchPanel,
+  SaveDocumentPromptDialog,
   SessionCompareDialog,
   SessionPickerDialog,
+  SaveWorkspacePromptDialog,
   SessionsPanel,
   SettingsPanel,
   StatusBar,
@@ -48,10 +50,10 @@ import {
   evictCleanBuffers,
   getBundleFsPath,
   getFileMapByPath,
-  getFirstFileId,
   getPinnedBufferIds,
   hydrateSessionState,
   mapCursorStateToPaths,
+  mapEditorGroupsToPaths,
   mapFileIdsToPaths,
   mapFileIdToPath,
   mergeLayout,
@@ -98,6 +100,7 @@ import type {
   ActivityId,
   BundleBootstrap,
   BundleScanResult,
+  DeviceSession,
   DocumentBuffer,
   DraftResolutionRecord,
   FileTreeNode,
@@ -174,6 +177,15 @@ type DraftMergeState = {
   entries: DraftMergeEntry[];
   currentIndex: number;
 };
+
+type PendingDirtyTabClose = {
+  documentId: string;
+  groupId: string;
+  tabIdsToClose: string[];
+  reason: "user-close" | "context-menu";
+};
+
+type SaveDocumentResult = "saved" | "blocked";
 
 function createWorkspaceScanId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -460,6 +472,26 @@ function getCreateEntryErrorMessage(kind: "file" | "directory") {
     : "Unable to create folder. Check the name and try again.";
 }
 
+function getWorkspaceSessionSignature(session: DeviceSession | null | undefined) {
+  if (!session) {
+    return "";
+  }
+
+  return JSON.stringify({
+    workspacePath: session.workspacePath ?? "",
+    openTabs: session.openTabs,
+    activeTab: session.activeTab,
+    editorGroups: session.editorGroups ?? [],
+    activeGroupId: session.activeGroupId ?? null,
+    groupSizes: session.groupSizes ?? [],
+    layout: session.layout,
+    sidebarState: session.sidebarState,
+    searchState: session.searchState,
+    cursorState: session.cursorState,
+    themeMode: session.themeMode
+  });
+}
+
 export default function App() {
   const currentDeviceId = useRef(createDeviceId()).current;
   const currentDeviceName = useRef(createDeviceName()).current;
@@ -481,6 +513,8 @@ export default function App() {
   const scanCancelRef = useRef<(() => void) | null>(null);
   const scanSkipFolderRef = useRef<((folderPath: string) => void) | null>(null);
   const editorFocusTokenRef = useRef(0);
+  const workspaceCloseInProgressRef = useRef(false);
+  const lastSavedWorkspaceFileSessionSignatureRef = useRef<string | null>(null);
 
   const [workspace, setWorkspace] = useState<WorkspaceRoot>(sampleRoot);
   const [tree, setTree] = useState<FileTreeNode[]>(sampleTree);
@@ -531,6 +565,10 @@ export default function App() {
   const [loadingBufferIds, setLoadingBufferIds] = useState<Set<string>>(() => new Set());
   const [pdfBlobEntries, setPdfBlobEntries] = useState<Record<string, { url: string; error?: string }>>({});
   const [cacheBootstrapSettled, setCacheBootstrapSettled] = useState(false);
+  const [dirtyTabClosePrompt, setDirtyTabClosePrompt] = useState<PendingDirtyTabClose | null>(null);
+  const [dirtyTabCloseSavePending, setDirtyTabCloseSavePending] = useState(false);
+  const [closeWorkspacePromptOpen, setCloseWorkspacePromptOpen] = useState(false);
+  const [closeWorkspaceSavePending, setCloseWorkspaceSavePending] = useState(false);
   const loadedPdfIdsRef = useRef<Set<string>>(new Set());
   const cacheBootstrapRunRef = useRef(0);
   const scanActiveRef = useRef(false);
@@ -599,6 +637,15 @@ export default function App() {
       JSON.stringify({
         workspaceId: workspace.id,
         tree,
+        editorGroups,
+        activeGroupId,
+        groupSizes,
+        layout,
+        sidebarState,
+        searchState,
+        cursorState,
+        themeMode,
+        bundleName: bundleLink?.name,
         files: files.map((file) => [
           file.id,
           file.path,
@@ -610,12 +657,26 @@ export default function App() {
         ]),
         dirtyBuffers: dirtyBuffers.map((buffer) => [
           buffer.documentId,
-          buffer.cachedBody.length,
+          hashText(buffer.cachedBody),
           buffer.lastAccessedAt,
           buffer.persistedLocal
         ])
       }),
-    [workspace.id, tree, files, dirtyBuffers]
+    [
+      workspace.id,
+      tree,
+      editorGroups,
+      activeGroupId,
+      groupSizes,
+      layout,
+      sidebarState,
+      searchState,
+      cursorState,
+      themeMode,
+      bundleLink?.name,
+      files,
+      dirtyBuffers
+    ]
   );
   const sessionSaveSignature = useMemo(
     () =>
@@ -623,6 +684,9 @@ export default function App() {
         themeMode,
         openTabs,
         activeTabId,
+        editorGroups,
+        activeGroupId,
+        groupSizes,
         layout,
         sidebarState,
         searchState,
@@ -631,10 +695,24 @@ export default function App() {
         dirtyBuffers: dirtyBuffers.map((buffer) => [
           buffer.documentId,
           fileMap[buffer.documentId]?.modifiedAt ?? "",
-          buffer.cachedBody.length
+          hashText(buffer.cachedBody)
         ])
       }),
-    [themeMode, openTabs, activeTabId, layout, sidebarState, searchState, cursorState, bundleLink?.name, dirtyBuffers, fileMap]
+    [
+      themeMode,
+      openTabs,
+      activeTabId,
+      editorGroups,
+      activeGroupId,
+      groupSizes,
+      layout,
+      sidebarState,
+      searchState,
+      cursorState,
+      bundleLink?.name,
+      dirtyBuffers,
+      fileMap
+    ]
   );
 
   function getRuntimeLabel() {
@@ -758,7 +836,8 @@ export default function App() {
     nextFiles: WorkspaceFileRecord[],
     nextBuffers: DocumentBuffer[] = [],
     nextManifest?: WorkspaceManifest,
-    nextBundleLink: WorkspaceBundleLink | null = null
+    nextBundleLink: WorkspaceBundleLink | null = null,
+    nextCachedSession?: DeviceSession
   ) {
     const skippedFolders = nextWorkspace.skippedFolders ?? [];
     const filteredFiles = skippedFolders.length
@@ -783,22 +862,39 @@ export default function App() {
     setLoadingBufferIds(new Set());
 
     const ownSession = nextManifest?.deviceSessions.find((session) => session.deviceId === currentDeviceId);
-    if (ownSession) {
-      const hydratedSession = hydrateSessionState(ownSession, nextFileMap);
+    lastSavedWorkspaceFileSessionSignatureRef.current = ownSession ? getWorkspaceSessionSignature(ownSession) : null;
+
+    const sessionToRestore = nextCachedSession ?? ownSession;
+    if (sessionToRestore) {
+      const hydratedSession = hydrateSessionState(sessionToRestore, nextFileMap);
       const filteredTabs = hydratedSession.openTabs;
-      const restoredTabs = filteredTabs.length
-        ? filteredTabs
-        : ([getFirstFileId(filteredFiles)].filter(Boolean) as string[]);
+      const restoredTabs = filteredTabs;
       const restoredActive =
         hydratedSession.activeTabId && nextFileMap[hydratedSession.activeTabId]
           ? hydratedSession.activeTabId
-          : filteredTabs[0] ?? getFirstFileId(filteredFiles);
-      replaceAllGroupsWithSingle(restoredTabs, restoredActive);
-      setLayout(mergeLayout(ownSession.layout, defaultLayout, searchAvailable));
-      setSidebarState(ownSession.sidebarState);
-      setSearchState(ownSession.searchState);
+          : filteredTabs[0] ?? null;
+
+      if (hydratedSession.editorGroups?.length) {
+        const validActiveGroupId =
+          hydratedSession.activeGroupId && hydratedSession.editorGroups.some((group) => group.id === hydratedSession.activeGroupId)
+            ? hydratedSession.activeGroupId
+            : hydratedSession.editorGroups[0].id;
+        setEditorGroups(hydratedSession.editorGroups);
+        setActiveGroupId(validActiveGroupId);
+        setGroupSizes(
+          hydratedSession.groupSizes?.length === hydratedSession.editorGroups.length
+            ? hydratedSession.groupSizes
+            : distributeEqualSizes(hydratedSession.editorGroups.length)
+        );
+      } else {
+        replaceAllGroupsWithSingle(restoredTabs, restoredActive);
+      }
+
+      setLayout(mergeLayout(sessionToRestore.layout, defaultLayout, searchAvailable));
+      setSidebarState(sessionToRestore.sidebarState);
+      setSearchState(sessionToRestore.searchState);
       setCursorState(hydratedSession.cursorState);
-      setThemeMode(nextManifest?.themeMode ?? ownSession.themeMode);
+      setThemeMode(sessionToRestore.themeMode);
     } else {
       replaceAllGroupsWithSingle([], null);
       setLayout(mergeLayout(defaultLayout, defaultLayout, searchAvailable));
@@ -859,7 +955,8 @@ export default function App() {
         snapshot.files,
         restoredBuffers,
         snapshot.workspace.manifest,
-        snapshot.workspace.bundle ?? null
+        snapshot.workspace.bundle ?? null,
+        snapshot.workspace.session
       );
       setStatusMessage(`Restored cached workspace: ${snapshot.workspace.root.displayName}`);
     } catch {
@@ -867,6 +964,26 @@ export default function App() {
         setStatusMessage("Loaded sample workspace.");
       }
     }
+  }
+
+  async function persistCurrentWorkspaceCache() {
+    await persistSetting("last-workspace-id", workspace.id);
+    await persistWorkspaceSnapshot(
+      {
+        id: workspace.id,
+        root: workspace,
+        tree,
+        manifest,
+        bundle: bundleLink ?? undefined,
+        session: createCurrentSessionSnapshot(),
+        updatedAt: new Date().toISOString()
+      },
+      files,
+      dirtyBuffers.map((buffer) => ({
+        ...buffer,
+        persistedLocal: true
+      }))
+    );
   }
 
   useEffect(() => {
@@ -944,45 +1061,26 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    if (!bundleLink) {
+      lastSavedWorkspaceFileSessionSignatureRef.current = null;
+      return;
+    }
+
+    const ownSession = manifest?.deviceSessions.find((session) => session.deviceId === currentDeviceId);
+    lastSavedWorkspaceFileSessionSignatureRef.current = ownSession ? getWorkspaceSessionSignature(ownSession) : null;
+  }, [bundleLink, manifest?.updatedAt, currentDeviceId]);
+
+  useEffect(() => {
     if (!cacheBootstrapSettled) {
       return;
     }
 
-    void persistSetting("last-workspace-id", workspace.id);
     const timer = window.setTimeout(() => {
-      void persistWorkspaceSnapshot(
-        {
-          id: workspace.id,
-          root: workspace,
-          tree,
-          manifest,
-          bundle: bundleLink ?? undefined,
-          updatedAt: new Date().toISOString()
-        },
-        files,
-        dirtyBuffers.map((buffer) => ({
-          ...buffer,
-          persistedLocal: true
-        }))
-      );
+      void persistCurrentWorkspaceCache();
     }, 350);
 
     return () => window.clearTimeout(timer);
   }, [cacheBootstrapSettled, workspaceSnapshotSignature, workspace, tree, manifest, bundleLink, files, dirtyBuffers]);
-
-  useEffect(() => {
-    if (workspace.id === sampleRoot.id || !bundleRuntimeReady) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      void saveWorkspaceSession("Auto-saved workspace bundle.");
-    }, 1400);
-
-    return () => {
-      window.clearTimeout(timeout);
-    };
-  }, [workspace.id, bundleRuntimeReady, sessionSaveSignature]);
 
   useEffect(() => {
     if (workspace.id === sampleRoot.id || !bundleRuntimeReady) {
@@ -995,7 +1093,7 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        void saveWorkspaceSession("Workspace bundle persisted.");
+        void persistCurrentWorkspaceCache();
         return;
       }
 
@@ -1018,7 +1116,75 @@ export default function App() {
       window.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [workspace.id, bundleRuntimeReady, manifest?.updatedAt]);
+  }, [workspace.id, bundleRuntimeReady, manifest?.updatedAt, workspaceSnapshotSignature, sessionSaveSignature]);
+
+  function isWorkspaceFileBehindCache() {
+    if (!bundleLink || !bundleRuntimeReady) {
+      return false;
+    }
+
+    return getWorkspaceSessionSignature(createCurrentSessionSnapshot()) !== lastSavedWorkspaceFileSessionSignatureRef.current;
+  }
+
+  async function closeDesktopWindowAfterCachePersist() {
+    if (!window.electronAPI || workspaceCloseInProgressRef.current) {
+      return;
+    }
+
+    workspaceCloseInProgressRef.current = true;
+    try {
+      await persistCurrentWorkspaceCache();
+      await window.electronAPI.confirmClose();
+    } finally {
+      workspaceCloseInProgressRef.current = false;
+    }
+  }
+
+  async function handleDesktopCloseRequested() {
+    await persistCurrentWorkspaceCache();
+
+    if (isWorkspaceFileBehindCache()) {
+      setCloseWorkspacePromptOpen(true);
+      return;
+    }
+
+    await closeDesktopWindowAfterCachePersist();
+  }
+
+  async function handleSaveWorkspaceBeforeClose() {
+    setCloseWorkspaceSavePending(true);
+    await persistCurrentWorkspaceCache();
+    await saveWorkspaceSession("Workspace bundle persisted.");
+
+    if (isWorkspaceFileBehindCache()) {
+      setCloseWorkspaceSavePending(false);
+      return;
+    }
+
+    setCloseWorkspacePromptOpen(false);
+    setCloseWorkspaceSavePending(false);
+    await closeDesktopWindowAfterCachePersist();
+  }
+
+  async function handleCloseWithoutSavingWorkspaceFile() {
+    setCloseWorkspacePromptOpen(false);
+    await closeDesktopWindowAfterCachePersist();
+  }
+
+  function handleCancelDesktopClose() {
+    setCloseWorkspacePromptOpen(false);
+    setCloseWorkspaceSavePending(false);
+  }
+
+  useEffect(() => {
+    if (!window.electronAPI) {
+      return;
+    }
+
+    return window.electronAPI.onCloseRequested(() => {
+      void handleDesktopCloseRequested();
+    });
+  }, [workspaceSnapshotSignature, sessionSaveSignature, bundleRuntimeReady, bundleLink]);
 
   useEffect(() => {
     if (workspace.id === sampleRoot.id) {
@@ -1813,13 +1979,18 @@ export default function App() {
     return pending;
   }
 
-  async function startDraftMerge(documentId: string) {
-    const file = fileMap[documentId];
+  /**
+   * Starts the remote-draft review for a specific file record.
+   *
+   * @param file - The workspace file whose foreign drafts should be reviewed.
+   * @returns A promise that settles after the review state is initialized or skipped.
+   */
+  async function startDraftMergeForFile(file: WorkspaceFileRecord) {
     if (!file || file.pendingForeignDraftCount === 0 || file.foreignDrafts.length === 0) {
       return;
     }
 
-    if (draftMergeState?.documentId === documentId) {
+    if (draftMergeState?.documentId === file.id) {
       return;
     }
 
@@ -1841,11 +2012,26 @@ export default function App() {
     }
 
     setDraftMergeState({
-      documentId,
+      documentId: file.id,
       entries,
       currentIndex: 0
     });
     setStatusMessage(`Reviewing ${entries.length} remote draft${entries.length === 1 ? "" : "s"} for ${file.name}.`);
+  }
+
+  /**
+   * Starts the remote-draft review for the document currently known in state.
+   *
+   * @param documentId - The document id whose foreign drafts should be reviewed.
+   * @returns A promise that settles after the review state is initialized or skipped.
+   */
+  async function startDraftMerge(documentId: string) {
+    const file = fileMap[documentId];
+    if (!file) {
+      return;
+    }
+
+    await startDraftMergeForFile(file);
   }
 
   function handleActivateFile(
@@ -1979,63 +2165,88 @@ export default function App() {
     );
   }
 
-  function handleCloseTab(documentId: string, groupId?: string) {
-    const targetGroupId = groupId ?? activeGroupId;
-    const file = fileMapRef.current[documentId];
-    const openElsewhere = editorGroupsRef.current.some(
-      (group) => group.id !== targetGroupId && group.openTabs.includes(documentId)
-    );
-    let removedGroupIndex = -1;
-    setEditorGroups((groups) => {
-      const next = groups.map((group) => {
-        if (group.id !== targetGroupId) return group;
-        const nextTabs = group.openTabs.filter((id) => id !== documentId);
-        let nextActive = group.activeTabId;
-        if (group.activeTabId === documentId) {
-          nextActive = nextTabs.at(-1) ?? null;
-        }
-        return {
-          ...group,
-          openTabs: nextTabs,
-          activeTabId: nextActive,
-          previewTabId: group.previewTabId === documentId ? null : group.previewTabId
-        };
-      });
-      if (next.length > 1) {
-        const emptyIndex = next.findIndex((group) => group.id === targetGroupId && group.openTabs.length === 0);
-        if (emptyIndex !== -1) {
-          removedGroupIndex = emptyIndex;
-          return next.filter((_, index) => index !== emptyIndex);
-        }
+  /**
+   * Checks whether a document remains open after a pending group close operation.
+   *
+   * @param documentId - The document id being considered for closure.
+   * @param groupId - The editor group where tabs are being closed.
+   * @param tabIdsToClose - The tab ids scheduled to close in the group.
+   * @returns True when another tab instance will still keep the document open.
+   */
+  function isDocumentOpenAfterTabClose(documentId: string, groupId: string, tabIdsToClose: Set<string>) {
+    return editorGroupsRef.current.some((group) => {
+      if (group.id !== groupId) {
+        return group.openTabs.includes(documentId);
       }
-      return next;
+
+      return group.openTabs.some((id) => id === documentId && !tabIdsToClose.has(id));
     });
-    logTabActivity("Closed tab.", file, { groupId: targetGroupId, reason: "user-close" });
-    if (removedGroupIndex !== -1) {
-      setGroupSizes((sizes) => {
-        if (sizes.length <= 1) return sizes;
-        const removed = sizes[removedGroupIndex] ?? 0;
-        const remaining = sizes.filter((_, index) => index !== removedGroupIndex);
-        if (remaining.length === 0) return sizes;
-        const share = removed / remaining.length;
-        return remaining.map((size) => size + share);
-      });
-      setActiveGroupId((current) => {
-        if (current !== targetGroupId) return current;
-        // Pick neighbor
-        return editorGroups[Math.max(0, removedGroupIndex - 1)]?.id ?? editorGroups[0]?.id ?? current;
-      });
-    }
-    if (!openElsewhere) {
-      evictBufferIfClean(documentId, "tab-closed");
-    }
   }
 
-  function closeTabsFromGroup(groupId: string, tabIdsToClose: Set<string>) {
+  /**
+   * Finds the first dirty document that needs user confirmation before closing.
+   *
+   * @param groupId - The editor group where tabs are being closed.
+   * @param tabIdsToClose - The tab ids scheduled to close in the group.
+   * @returns The dirty document id that blocks closing, or null when no prompt is needed.
+   */
+  function getDirtyTabCloseBlocker(groupId: string, tabIdsToClose: Set<string>) {
+    for (const documentId of tabIdsToClose) {
+      if (bufferMapRef.current[documentId]?.dirty && !isDocumentOpenAfterTabClose(documentId, groupId, tabIdsToClose)) {
+        return documentId;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Requests tab closure and prompts before discarding or saving dirty documents.
+   *
+   * @param groupId - The editor group where tabs should close.
+   * @param tabIdsToClose - The tab ids requested for closure.
+   * @param reason - The user action that initiated the close request.
+   * @returns Nothing.
+   */
+  function requestCloseTabsFromGroup(
+    groupId: string,
+    tabIdsToClose: Set<string>,
+    reason: "user-close" | "context-menu"
+  ) {
+    if (tabIdsToClose.size === 0) return;
+
+    const dirtyDocumentId = getDirtyTabCloseBlocker(groupId, tabIdsToClose);
+    if (dirtyDocumentId) {
+      setDirtyTabCloseSavePending(false);
+      setDirtyTabClosePrompt({
+        documentId: dirtyDocumentId,
+        groupId,
+        tabIdsToClose: [...tabIdsToClose],
+        reason
+      });
+      return;
+    }
+
+    performCloseTabsFromGroup(groupId, tabIdsToClose, reason);
+  }
+
+  /**
+   * Closes tabs after any required dirty-document prompt has been resolved.
+   *
+   * @param groupId - The editor group where tabs should close.
+   * @param tabIdsToClose - The tab ids that can close immediately.
+   * @param reason - The user action that initiated the close request.
+   * @returns Nothing.
+   */
+  function performCloseTabsFromGroup(
+    groupId: string,
+    tabIdsToClose: Set<string>,
+    reason: "user-close" | "context-menu"
+  ) {
     if (tabIdsToClose.size === 0) return;
     for (const documentId of tabIdsToClose) {
       const file = fileMapRef.current[documentId];
-      logTabActivity("Closed tab.", file, { groupId, reason: "context-menu" });
+      logTabActivity("Closed tab.", file, { groupId, reason });
     }
     let removedGroupIndex = -1;
     setEditorGroups((groups) => {
@@ -2077,19 +2288,27 @@ export default function App() {
       });
     }
     for (const documentId of tabIdsToClose) {
-      const openElsewhere = editorGroupsRef.current.some(
-        (g) => g.id !== groupId && g.openTabs.includes(documentId)
-      );
-      if (!openElsewhere) {
+      if (!isDocumentOpenAfterTabClose(documentId, groupId, tabIdsToClose)) {
         evictBufferIfClean(documentId, "tab-closed");
       }
     }
   }
 
+  /**
+   * Handles a single tab close request from the tab strip.
+   *
+   * @param documentId - The document id for the tab being closed.
+   * @param groupId - The editor group id that owns the tab.
+   * @returns Nothing.
+   */
+  function handleCloseTab(documentId: string, groupId?: string) {
+    requestCloseTabsFromGroup(groupId ?? activeGroupId, new Set([documentId]), "user-close");
+  }
+
   function handleCloseOtherTabs(documentId: string, groupId: string) {
     const group = editorGroupsRef.current.find((g) => g.id === groupId);
     if (!group) return;
-    closeTabsFromGroup(groupId, new Set(group.openTabs.filter((id) => id !== documentId)));
+    requestCloseTabsFromGroup(groupId, new Set(group.openTabs.filter((id) => id !== documentId)), "context-menu");
   }
 
   function handleCloseTabsToRight(documentId: string, groupId: string) {
@@ -2097,20 +2316,133 @@ export default function App() {
     if (!group) return;
     const index = group.openTabs.indexOf(documentId);
     if (index === -1) return;
-    closeTabsFromGroup(groupId, new Set(group.openTabs.slice(index + 1)));
+    requestCloseTabsFromGroup(groupId, new Set(group.openTabs.slice(index + 1)), "context-menu");
   }
 
   function handleCloseSavedTabs(groupId: string) {
     const group = editorGroupsRef.current.find((g) => g.id === groupId);
     if (!group) return;
     const toClose = group.openTabs.filter((id) => !bufferMapRef.current[id]?.dirty);
-    closeTabsFromGroup(groupId, new Set(toClose));
+    requestCloseTabsFromGroup(groupId, new Set(toClose), "context-menu");
   }
 
   function handleCloseAllTabs(groupId: string) {
     const group = editorGroupsRef.current.find((g) => g.id === groupId);
     if (!group) return;
-    closeTabsFromGroup(groupId, new Set(group.openTabs));
+    requestCloseTabsFromGroup(groupId, new Set(group.openTabs), "context-menu");
+  }
+
+  /**
+   * Continues a deferred tab close request after the dirty document is resolved.
+   *
+   * @param pendingClose - The pending close request captured before prompting.
+   * @returns Nothing.
+   */
+  function continuePendingDirtyTabClose(pendingClose: PendingDirtyTabClose) {
+    requestCloseTabsFromGroup(
+      pendingClose.groupId,
+      new Set(pendingClose.tabIdsToClose),
+      pendingClose.reason
+    );
+  }
+
+  /**
+   * Clears this device's local dirty cache for one document without touching other devices.
+   *
+   * @param documentId - The dirty document id being discarded locally.
+   * @returns A promise that settles after local state and bundle draft tombstones are updated.
+   */
+  async function discardDirtyDocumentFromCurrentDevice(documentId: string) {
+    const file = fileMapRef.current[documentId];
+    if (!file || !bufferMapRef.current[documentId]) {
+      return;
+    }
+
+    const nextBufferMap = { ...bufferMapRef.current };
+    delete nextBufferMap[documentId];
+
+    bufferMapRef.current = nextBufferMap;
+    setBufferMap(applyBufferPolicy(nextBufferMap, [], "discard-tab-close"));
+    setStatusMessage(`Discarded local changes for ${file.name}.`);
+    await persistSetting("last-workspace-id", workspace.id);
+    await persistWorkspaceSnapshot(
+      {
+        id: workspace.id,
+        root: workspace,
+        tree,
+        manifest,
+        bundle: bundleLink ?? undefined,
+        session: createCurrentSessionSnapshot(),
+        updatedAt: new Date().toISOString()
+      },
+      Object.values(fileMapRef.current),
+      Object.values(nextBufferMap)
+        .filter((entry) => entry.dirty)
+        .map((entry) => ({
+          ...entry,
+          persistedLocal: true
+        }))
+    );
+
+    if (bundleRuntimeReady) {
+      await saveWorkspaceSession(`Discarded local changes for ${file.name}.`, {
+        fileMapOverride: fileMapRef.current,
+        bufferMapOverride: nextBufferMap
+      });
+    }
+  }
+
+  /**
+   * Saves the prompted dirty tab, then resumes the close request.
+   *
+   * @returns A promise that settles after save and close processing completes.
+   */
+  async function handleSaveDirtyTabBeforeClose() {
+    if (!dirtyTabClosePrompt) {
+      return;
+    }
+
+    const pendingClose = dirtyTabClosePrompt;
+    setDirtyTabCloseSavePending(true);
+    const result = await saveDocumentById(pendingClose.documentId, {
+      requireMergedDrafts: true,
+      clearAllDeviceDrafts: true
+    });
+    setDirtyTabCloseSavePending(false);
+
+    if (result !== "saved") {
+      setDirtyTabClosePrompt(null);
+      return;
+    }
+
+    setDirtyTabClosePrompt(null);
+    continuePendingDirtyTabClose(pendingClose);
+  }
+
+  /**
+   * Discards this device's dirty cache for the prompted tab, then resumes closing.
+   *
+   * @returns A promise that settles after discard and close processing completes.
+   */
+  async function handleDontSaveDirtyTabBeforeClose() {
+    if (!dirtyTabClosePrompt) {
+      return;
+    }
+
+    const pendingClose = dirtyTabClosePrompt;
+    setDirtyTabClosePrompt(null);
+    await discardDirtyDocumentFromCurrentDevice(pendingClose.documentId);
+    continuePendingDirtyTabClose(pendingClose);
+  }
+
+  /**
+   * Cancels a pending dirty-tab close prompt.
+   *
+   * @returns Nothing.
+   */
+  function handleCancelDirtyTabClose() {
+    setDirtyTabClosePrompt(null);
+    setDirtyTabCloseSavePending(false);
   }
 
   function handleCopyFilePath(documentId: string) {
@@ -2509,6 +2841,12 @@ export default function App() {
     }
   }
 
+  /**
+   * Updates the active document buffer and logs only the clean-to-dirty transition.
+   *
+   * @param nextValue - The next editor text for the active document.
+   * @returns Nothing.
+   */
   function handleUpdateDocument(nextValue: string) {
     if (!activeFile) {
       return;
@@ -2516,8 +2854,10 @@ export default function App() {
 
     const documentId = activeFile.id;
     const groupId = activeGroupId;
-    const previousBody = bufferMapRef.current[documentId]?.cachedBody ?? "";
+    const previousBuffer = bufferMapRef.current[documentId];
+    const previousBody = previousBuffer?.cachedBody ?? "";
     const delta = nextValue.length - previousBody.length;
+    const isCleanToDirty = nextValue !== previousBody && !previousBuffer?.dirty;
     const updatedAt = new Date().toISOString();
     setEditorGroups((groups) =>
       groups.map((group) =>
@@ -2527,9 +2867,9 @@ export default function App() {
       )
     );
 
-    if (nextValue !== previousBody) {
+    if (isCleanToDirty) {
       logFileActivity(
-        delta > 0 ? "Added content to document." : delta < 0 ? "Removed content from document." : "Updated document content.",
+        "Document changed from clean to dirty.",
         activeFile,
         {
           groupId,
@@ -3054,58 +3394,128 @@ export default function App() {
     };
   }
 
-  async function handleSaveActiveDocument() {
-    if (!activeFile || activeFile.isPdf) {
-      if (activeFile?.isPdf) {
+  /**
+   * Writes a resolution record that clears active dirty drafts for a saved document.
+   *
+   * @param file - The document file that was successfully saved.
+   * @param body - The saved document body.
+   * @param latestManifest - The latest manifest containing active draft refs.
+   * @param target - The bundle location where the resolution record should be written.
+   * @returns The created resolution record, or undefined when there were no drafts to clear.
+   */
+  async function clearAllDeviceDraftsForSavedDocument(
+    file: WorkspaceFileRecord,
+    body: string,
+    latestManifest: WorkspaceManifest | undefined,
+    target: WorkspaceBundleLink | null
+  ) {
+    if (!latestManifest || !target) {
+      return undefined;
+    }
+
+    const draftRefsToClear = latestManifest.draftRefs.filter((draft) => draft.path === file.path && !draft.deleted);
+    if (draftRefsToClear.length === 0) {
+      return undefined;
+    }
+
+    const resolutionRecord = createDraftResolutionRecord({
+      documentPath: file.path,
+      deviceId: currentDeviceId,
+      deviceName: currentDeviceName,
+      clearedDraftRevisionIds: draftRefsToClear.map((draft) => draft.revisionId),
+      finalBody: body
+    });
+
+    await writeBundleJson(
+      resolutionRecord.blobPath,
+      createDraftResolutionPayload(resolutionRecord, body),
+      target
+    );
+
+    return resolutionRecord;
+  }
+
+  /**
+   * Saves a document by id while enforcing remote-draft merge requirements.
+   *
+   * @param documentId - The document id to save.
+   * @param options - Save behavior for merge checks and draft cleanup.
+   * @returns "saved" when the write completed, otherwise "blocked".
+   */
+  async function saveDocumentById(
+    documentId: string,
+    options: { requireMergedDrafts?: boolean; clearAllDeviceDrafts?: boolean } = {}
+  ): Promise<SaveDocumentResult> {
+    const file = fileMapRef.current[documentId];
+    if (!file || file.isPdf) {
+      if (file?.isPdf) {
         setStatusMessage("PDF files are preview-only and cannot be saved.");
       }
-      return;
+      return "blocked";
     }
 
-    if (activeDraftMerge?.documentId === activeFile.id) {
+    if (draftMergeState?.documentId === documentId) {
       setStatusMessage("Finish or skip the remote draft review before saving this file.");
-      return;
+      return "blocked";
     }
 
-    const loadedBuffer = activeBuffer ?? (await ensureBuffer(activeFile.id, "save-active-document"));
+    const loadedBuffer = bufferMapRef.current[documentId] ?? (await ensureBuffer(documentId, "save-document"));
     if (!loadedBuffer) {
-      setStatusMessage(`Unable to load ${activeFile.name}.`);
-      return;
+      setStatusMessage(`Unable to load ${file.name}.`);
+      return "blocked";
     }
 
     if (workspace.id === sampleRoot.id) {
-      setStatusMessage("The sample workspace is editable, but not written to disk.");
-      setBufferMap((previous) =>
-        applyBufferPolicy({
-          ...previous,
-          [activeFile.id]: {
-            ...loadedBuffer,
-            dirty: false
-          }
-        }, [], "sample-save")
-      );
-      setFileMap((previous) => ({
-        ...previous,
-        [activeFile.id]: {
-          ...previous[activeFile.id],
-          lastSyncedModifiedAt: previous[activeFile.id].modifiedAt,
-          lastSyncedSize: previous[activeFile.id].size
+      const nextFileMap = {
+        ...fileMapRef.current,
+        [file.id]: {
+          ...fileMapRef.current[file.id],
+          lastSyncedModifiedAt: fileMapRef.current[file.id].modifiedAt,
+          lastSyncedSize: fileMapRef.current[file.id].size
         }
-      }));
-      return;
+      };
+      const nextBufferMap = {
+        ...bufferMapRef.current,
+        [file.id]: {
+          ...loadedBuffer,
+          dirty: false,
+          persistedLocal: false
+        }
+      };
+
+      fileMapRef.current = nextFileMap;
+      bufferMapRef.current = nextBufferMap;
+      setStatusMessage("The sample workspace is editable, but not written to disk.");
+      setFileMap(nextFileMap);
+      setBufferMap(applyBufferPolicy(nextBufferMap, [], "sample-save"));
+      return "saved";
     }
 
     try {
-      let targetFile = activeFile;
+      let targetFile = file;
       let targetBuffer = loadedBuffer;
+      let latestManifest: WorkspaceManifest | undefined;
+      const targetBundle = bundleLink;
+
       if (bundleRuntimeReady) {
-        const latestManifest = await readManifestFromBundle();
+        latestManifest = await readManifestFromBundle(targetBundle);
         if (latestManifest) {
           setManifest(latestManifest);
-          const syncedState = await syncDocumentBundleState(latestManifest);
-          targetFile = syncedState.fileMap[activeFile.id] ?? targetFile;
-          targetBuffer = syncedState.bufferMap[activeFile.id] ?? targetBuffer;
+          const syncedState = await syncDocumentBundleState(latestManifest, targetBundle, fileMapRef.current, {
+            ...bufferMapRef.current,
+            [documentId]: loadedBuffer
+          });
+          targetFile = syncedState.fileMap[documentId] ?? targetFile;
+          targetBuffer = syncedState.bufferMap[documentId] ?? targetBuffer;
         }
+      }
+
+      if (options.requireMergedDrafts && targetFile.pendingForeignDraftCount > 0) {
+        setStatusMessage(`Merge remote drafts for ${targetFile.name} before saving.`);
+        if (bundleRuntimeReady) {
+          await startDraftMergeForFile(targetFile);
+        }
+        return "blocked";
       }
 
       const latestSnapshot = await getWorkspaceDocumentSnapshot(targetFile);
@@ -3116,7 +3526,7 @@ export default function App() {
         latestSnapshot.size !== targetFile.lastSyncedSize
       ) {
         await queueDiskConflict(targetFile, latestSnapshot, targetBuffer.cachedBody);
-        return;
+        return "blocked";
       }
 
       const writeResult = await writeWorkspaceDocument(targetFile, targetBuffer.cachedBody);
@@ -3125,10 +3535,14 @@ export default function App() {
         throw new Error("This workspace is not writable in the current runtime.");
       }
 
-      setFileMap((previous) => ({
-        ...previous,
+      const resolutionRecord =
+        options.clearAllDeviceDrafts && bundleRuntimeReady
+          ? await clearAllDeviceDraftsForSavedDocument(targetFile, targetBuffer.cachedBody, latestManifest, targetBundle)
+          : undefined;
+      const nextFileMap = {
+        ...fileMapRef.current,
         [targetFile.id]: {
-          ...previous[targetFile.id],
+          ...fileMapRef.current[targetFile.id],
           modifiedAt: writeResult.modifiedAt,
           lastSyncedModifiedAt: writeResult.modifiedAt,
           size: writeResult.size,
@@ -3136,26 +3550,57 @@ export default function App() {
           conflictState: undefined,
           foreignDrafts: [],
           pendingForeignDraftCount: 0,
-          unavailable: false
+          unavailable: false,
+          lastAppliedResolutionRevisionId:
+            resolutionRecord?.revisionId ?? fileMapRef.current[targetFile.id].lastAppliedResolutionRevisionId
         }
-      }));
-      setBufferMap((previous) =>
-        applyBufferPolicy({
-          ...previous,
-          [targetFile.id]: {
-            ...(previous[targetFile.id] ?? targetBuffer),
-            cachedBody: targetBuffer.cachedBody,
-            dirty: false,
-            lastAccessedAt: Date.now(),
-            persistedLocal: false
-          }
-        }, [], "save-write")
-      );
+      };
+      const nextBufferMap = {
+        ...bufferMapRef.current,
+        [targetFile.id]: {
+          ...(bufferMapRef.current[targetFile.id] ?? targetBuffer),
+          cachedBody: targetBuffer.cachedBody,
+          dirty: false,
+          lastAccessedAt: Date.now(),
+          persistedLocal: false
+        }
+      };
 
-      setStatusMessage(`Saved ${targetFile.name}`);
+      fileMapRef.current = nextFileMap;
+      bufferMapRef.current = nextBufferMap;
+      setFileMap(nextFileMap);
+      setBufferMap(applyBufferPolicy(nextBufferMap, [], "save-write"));
+
+      if (bundleRuntimeReady) {
+        await saveWorkspaceSession(`Saved ${targetFile.name}`, {
+          fileMapOverride: nextFileMap,
+          bufferMapOverride: nextBufferMap
+        });
+      } else {
+        setStatusMessage(`Saved ${targetFile.name}`);
+      }
+
+      return "saved";
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Unable to save the current file.");
+      return "blocked";
     }
+  }
+
+  /**
+   * Saves the active editor document.
+   *
+   * @returns A promise that settles after the active save attempt completes.
+   */
+  async function handleSaveActiveDocument() {
+    if (!activeFile) {
+      return;
+    }
+
+    await saveDocumentById(activeFile.id, {
+      requireMergedDrafts: true,
+      clearAllDeviceDrafts: true
+    });
   }
 
   async function pollWorkspaceChanges(trigger = "auto") {
@@ -3731,6 +4176,9 @@ export default function App() {
         workspacePath: workspace.rootPath,
         openTabs: mapFileIdsToPaths(openTabs, syncedState.fileMap),
         activeTab: mapFileIdToPath(activeTabId, syncedState.fileMap),
+        editorGroups: mapEditorGroupsToPaths(editorGroups, syncedState.fileMap),
+        activeGroupId,
+        groupSizes,
         layout,
         sidebarState,
         searchState: {
@@ -3756,6 +4204,7 @@ export default function App() {
       }
 
       await writeBundleJson(getSessionFilePath(currentDeviceId, session.revisionId), session, nextBundleLink);
+      lastSavedWorkspaceFileSessionSignatureRef.current = getWorkspaceSessionSignature(session);
 
       for (const draftRef of draftRefs) {
         const document = syncedDocuments.find((entry) => entry.path === draftRef.path);
@@ -3803,6 +4252,9 @@ export default function App() {
       workspacePath: workspace.rootPath,
       openTabs: mapFileIdsToPaths(openTabs, fileMap),
       activeTab: mapFileIdToPath(activeTabId, fileMap),
+      editorGroups: mapEditorGroupsToPaths(editorGroups, fileMap),
+      activeGroupId,
+      groupSizes,
       layout,
       sidebarState,
       searchState,
@@ -4287,6 +4739,7 @@ export default function App() {
   const availableActivities: ActivityId[] | undefined = searchAvailable
     ? undefined
     : ["files", "sessions", "providers", "settings"];
+  const dirtyTabCloseFile = dirtyTabClosePrompt ? fileMap[dirtyTabClosePrompt.documentId] ?? null : null;
 
   // Stable handler identities for hot children (EditorGroup / TabStrip / TreeRow).
   // Each wraps the latest implementation via a ref so that the function reference
@@ -4633,6 +5086,26 @@ export default function App() {
 
       {operationErrorMessage ? (
         <MessageDialog message={operationErrorMessage} onClose={() => setOperationErrorMessage(null)} />
+      ) : null}
+
+      {dirtyTabClosePrompt && dirtyTabCloseFile ? (
+        <SaveDocumentPromptDialog
+          documentName={dirtyTabCloseFile.name}
+          saving={dirtyTabCloseSavePending}
+          onSave={() => void handleSaveDirtyTabBeforeClose()}
+          onDontSave={() => void handleDontSaveDirtyTabBeforeClose()}
+          onCancel={handleCancelDirtyTabClose}
+        />
+      ) : null}
+
+      {closeWorkspacePromptOpen ? (
+        <SaveWorkspacePromptDialog
+          workspaceName={workspace.displayName}
+          saving={closeWorkspaceSavePending}
+          onSave={() => void handleSaveWorkspaceBeforeClose()}
+          onDontSave={() => void handleCloseWithoutSavingWorkspaceFile()}
+          onCancel={handleCancelDesktopClose}
+        />
       ) : null}
 
       {diskConflict ? (

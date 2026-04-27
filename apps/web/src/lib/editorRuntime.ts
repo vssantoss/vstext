@@ -134,6 +134,15 @@ export function mapFileIdToPath(fileId: string | null, fileMap: Record<string, W
   return fileId ? fileMap[fileId]?.path ?? null : null;
 }
 
+export function mapEditorGroupsToPaths(groups: EditorGroupState[], fileMap: Record<string, WorkspaceFileRecord>) {
+  return groups.map((group) => ({
+    id: group.id,
+    openTabs: mapFileIdsToPaths(group.openTabs, fileMap),
+    activeTab: mapFileIdToPath(group.activeTabId, fileMap),
+    previewTab: mapFileIdToPath(group.previewTabId, fileMap)
+  }));
+}
+
 export function mapCursorStateToPaths(
   cursorState: Record<string, { line: number; column: number; scrollTop: number }>,
   fileMap: Record<string, WorkspaceFileRecord>
@@ -154,6 +163,22 @@ export function hydrateSessionState(session: DeviceSession, nextFileMap: Record<
     .map((path) => documentByPath.get(path)?.id)
     .filter((documentId): documentId is string => Boolean(documentId));
   const activeTabId = session.activeTab ? documentByPath.get(session.activeTab)?.id ?? null : null;
+  const editorGroups = session.editorGroups
+    ?.map((group) => {
+      const groupOpenTabs = group.openTabs
+        .map((path) => documentByPath.get(path)?.id)
+        .filter((documentId): documentId is string => Boolean(documentId));
+      const groupActiveTabId = group.activeTab ? documentByPath.get(group.activeTab)?.id ?? null : null;
+      const groupPreviewTabId = group.previewTab ? documentByPath.get(group.previewTab)?.id ?? null : null;
+
+      return {
+        id: group.id,
+        openTabs: groupOpenTabs,
+        activeTabId: groupActiveTabId && groupOpenTabs.includes(groupActiveTabId) ? groupActiveTabId : groupOpenTabs.at(-1) ?? null,
+        previewTabId: groupPreviewTabId && groupOpenTabs.includes(groupPreviewTabId) ? groupPreviewTabId : null
+      };
+    })
+    .filter((group) => group.openTabs.length > 0);
   const cursorState = Object.fromEntries(
     Object.entries(session.cursorState)
       .map(([path, snapshot]) => {
@@ -166,6 +191,9 @@ export function hydrateSessionState(session: DeviceSession, nextFileMap: Record<
   return {
     openTabs,
     activeTabId,
+    editorGroups,
+    activeGroupId: session.activeGroupId,
+    groupSizes: session.groupSizes,
     cursorState
   };
 }

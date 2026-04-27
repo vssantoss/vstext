@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { createBufferFromBody, evictCleanBuffers, mergeLayout, resolvePreviewTabId } from "./editorRuntime";
+import {
+  createBufferFromBody,
+  evictCleanBuffers,
+  hydrateSessionState,
+  mapEditorGroupsToPaths,
+  mergeLayout,
+  resolvePreviewTabId
+} from "./editorRuntime";
 import type { DocumentBuffer, LayoutState, WorkspaceFileRecord } from "../types";
 
 const defaultLayout: LayoutState = {
@@ -88,5 +95,53 @@ describe("editor runtime", () => {
         documentAlreadyOpen: false
       })
     ).toBe("doc-2");
+  });
+
+  it("round-trips split editor groups through portable session paths", () => {
+    const fileOne = createFile("doc-1");
+    const fileTwo = createFile("doc-2");
+    const fileMap = {
+      [fileOne.id]: fileOne,
+      [fileTwo.id]: fileTwo
+    };
+    const groups = [
+      {
+        id: "group-a",
+        openTabs: [fileOne.id],
+        activeTabId: fileOne.id,
+        previewTabId: null
+      },
+      {
+        id: "group-b",
+        openTabs: [fileTwo.id],
+        activeTabId: fileTwo.id,
+        previewTabId: fileTwo.id
+      }
+    ];
+
+    const editorGroups = mapEditorGroupsToPaths(groups, fileMap);
+    const hydrated = hydrateSessionState(
+      {
+        deviceId: "device-1",
+        deviceName: "desktop:test",
+        revisionId: "revision-1",
+        updatedAt: "2026-04-23T00:00:00.000Z",
+        openTabs: [fileOne.path],
+        activeTab: fileOne.path,
+        editorGroups,
+        activeGroupId: "group-b",
+        groupSizes: [40, 60],
+        layout: defaultLayout,
+        sidebarState: { expandedPaths: [], searchOpen: true },
+        searchState: { query: "", lastQuery: "", selectedPath: null },
+        cursorState: {},
+        themeMode: "dark"
+      },
+      fileMap
+    );
+
+    expect(hydrated.editorGroups).toEqual(groups);
+    expect(hydrated.activeGroupId).toBe("group-b");
+    expect(hydrated.groupSizes).toEqual([40, 60]);
   });
 });

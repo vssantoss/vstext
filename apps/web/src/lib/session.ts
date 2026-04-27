@@ -137,6 +137,9 @@ export function createSessionSnapshot(input: {
   workspacePath?: string;
   openTabs: string[];
   activeTab: string | null;
+  editorGroups?: DeviceSession["editorGroups"];
+  activeGroupId?: string;
+  groupSizes?: number[];
   layout: LayoutState;
   sidebarState: SidebarState;
   searchState: SearchState;
@@ -151,6 +154,12 @@ export function createSessionSnapshot(input: {
     updatedAt: new Date().toISOString(),
     openTabs: [...input.openTabs],
     activeTab: input.activeTab,
+    editorGroups: input.editorGroups?.map((group) => ({
+      ...group,
+      openTabs: [...group.openTabs]
+    })),
+    activeGroupId: input.activeGroupId,
+    groupSizes: input.groupSizes ? [...input.groupSizes] : undefined,
     layout: input.layout,
     sidebarState: input.sidebarState,
     searchState: input.searchState,
@@ -245,6 +254,7 @@ export function createRuntimeManifest(input: {
   const sortedResolutions = [...input.resolutions].sort(
     (left, right) => right.resolvedAt.localeCompare(left.resolvedAt) || right.revisionId.localeCompare(left.revisionId)
   );
+  const clearedDraftRevisionIds = new Set(sortedResolutions.flatMap((resolution) => resolution.clearedDraftRevisionIds));
   const latestResolution = sortedResolutions[0];
   const latestRevisionRecord = [
     latestSessions[0]
@@ -276,7 +286,7 @@ export function createRuntimeManifest(input: {
     updatedAt: latestUpdate,
     lastWriterDeviceId: latestRevisionRecord?.deviceId ?? "",
     deviceSessions: latestSessions.sort((left, right) => left.updatedAt.localeCompare(right.updatedAt)),
-    draftRefs: latestDrafts.filter((draft) => !draft.deleted),
+    draftRefs: latestDrafts.filter((draft) => !draft.deleted && !clearedDraftRevisionIds.has(draft.revisionId)),
     resolutionRefs: sortedResolutions
   };
 }

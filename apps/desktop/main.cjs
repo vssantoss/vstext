@@ -29,6 +29,7 @@ const activeOpenDirectoryScans = new Map();
 const activeWorkspaceSearches = new Map();
 const registeredWorkspaceRoots = new Set();
 const registeredBundleRoots = new Set();
+const windowsAllowedToClose = new WeakSet();
 const maxWorkspaceScanDepth = 64;
 const titleBarOverlayHeight = 32;
 const windowThemeChrome = {
@@ -1043,6 +1044,15 @@ async function createWindow() {
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
     console.error(`Renderer process exited: ${details.reason}`);
   });
+  mainWindow.on("close", (event) => {
+    if (windowsAllowedToClose.has(mainWindow)) {
+      windowsAllowedToClose.delete(mainWindow);
+      return;
+    }
+
+    event.preventDefault();
+    mainWindow.webContents.send("window:close-requested");
+  });
 
   await loadRenderer(mainWindow);
 }
@@ -1058,6 +1068,17 @@ ipcMain.handle("window:set-theme", (event, theme) => {
   }
 
   applyWindowTheme(targetWindow, theme);
+  return true;
+});
+
+ipcMain.handle("window:confirm-close", (event) => {
+  const targetWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!targetWindow) {
+    return false;
+  }
+
+  windowsAllowedToClose.add(targetWindow);
+  targetWindow.close();
   return true;
 });
 

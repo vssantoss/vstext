@@ -170,11 +170,21 @@ export interface DeviceSession {
   workspacePath?: string;
   openTabs: string[];
   activeTab: string | null;
+  editorGroups?: DeviceSessionEditorGroup[];
+  activeGroupId?: string;
+  groupSizes?: number[];
   layout: LayoutState;
   sidebarState: SidebarState;
   searchState: SearchState;
   cursorState: Record<string, CursorSnapshot>;
   themeMode: ThemeMode;
+}
+
+export interface DeviceSessionEditorGroup {
+  id: string;
+  openTabs: string[];
+  activeTab: string | null;
+  previewTab: string | null;
 }
 
 export interface BundleBootstrap {
@@ -247,6 +257,7 @@ export interface CachedWorkspace {
   tree: FileTreeNode[];
   manifest?: WorkspaceManifest;
   bundle?: WorkspaceBundleLink;
+  session?: DeviceSession;
   updatedAt: string;
 }
 
@@ -321,6 +332,8 @@ export interface WorkspaceScanProgress {
 
 export interface AppDesktopApi {
   setWindowTheme: (theme: ResolvedTheme) => Promise<boolean>;
+  confirmClose: () => Promise<boolean>;
+  onCloseRequested: (listener: () => void) => () => void;
   openDirectory: (scanId: string) => Promise<OpenDirectoryResult | null>;
   openDirectoryByPath: (absolutePath: string, scanId: string) => Promise<OpenDirectoryResult | null>;
   restoreWorkspaceAccess: (rootPath: string) => Promise<boolean>;

@@ -1707,6 +1707,80 @@ export function ConfirmationDialog(props: ConfirmationDialogProps) {
   );
 }
 
+interface SaveWorkspacePromptDialogProps {
+  workspaceName: string;
+  saving: boolean;
+  onSave: () => void;
+  onDontSave: () => void;
+  onCancel: () => void;
+}
+
+interface SaveDocumentPromptDialogProps {
+  documentName: string;
+  saving: boolean;
+  onSave: () => void;
+  onDontSave: () => void;
+  onCancel: () => void;
+}
+
+/**
+ * Renders the close-tab prompt for a dirty document.
+ *
+ * @param props - The document name, pending state, and prompt action handlers.
+ * @returns Modal JSX for saving, discarding, or cancelling the tab close.
+ */
+export function SaveDocumentPromptDialog(props: SaveDocumentPromptDialogProps) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal>
+      <div className="modal">
+        <div className="modal__simple-body">
+          <p>Save changes to {props.documentName} before closing?</p>
+        </div>
+        <div className="modal__actions">
+          <button type="button" className="button button--ghost" onClick={props.onCancel} disabled={props.saving}>
+            Cancel
+          </button>
+          <button type="button" className="button button--ghost" onClick={props.onDontSave} disabled={props.saving}>
+            Don't Save
+          </button>
+          <button type="button" className="button" onClick={props.onSave} disabled={props.saving}>
+            {props.saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Renders the desktop close prompt for unsaved workspace bundle state.
+ *
+ * @param props - The workspace name, pending state, and prompt action handlers.
+ * @returns Modal JSX for saving, discarding, or cancelling the window close.
+ */
+export function SaveWorkspacePromptDialog(props: SaveWorkspacePromptDialogProps) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal>
+      <div className="modal">
+        <div className="modal__simple-body">
+          <p>Save workspace changes for {props.workspaceName} before closing?</p>
+        </div>
+        <div className="modal__actions">
+          <button type="button" className="button button--ghost" onClick={props.onCancel} disabled={props.saving}>
+            Cancel
+          </button>
+          <button type="button" className="button button--ghost" onClick={props.onDontSave} disabled={props.saving}>
+            Don't Save
+          </button>
+          <button type="button" className="button" onClick={props.onSave} disabled={props.saving}>
+            {props.saving ? "Saving..." : "Save Workspace"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface MessageDialogProps {
   message: string;
   onClose: () => void;

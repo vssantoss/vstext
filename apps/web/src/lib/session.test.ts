@@ -6,6 +6,7 @@ import {
   buildSessionCompareItems,
   createDeviceId,
   createBundleBootstrap,
+  createDraftResolutionRecord,
   createRuntimeManifest,
   createSessionSnapshot
 } from "./session";
@@ -94,6 +95,44 @@ describe("workspace manifest helpers", () => {
     expect(manifest.themeMode).toBe("dark");
     expect(manifest.workspaceRef.kind).toBe("local");
     expect(manifest.draftRefs[0]?.path).toBe("notes.md");
+  });
+
+  it("omits draft refs cleared by resolution records", () => {
+    const refs = [
+      ...buildDraftRefs("device-1", "desktop:test", [dirtyDocument]),
+      ...buildDraftRefs("device-2", "web:test", [dirtyDocument])
+    ];
+    const resolution = createDraftResolutionRecord({
+      documentPath: dirtyDocument.path,
+      deviceId: "device-1",
+      deviceName: "desktop:test",
+      clearedDraftRevisionIds: refs.map((ref) => ref.revisionId),
+      finalBody: dirtyDocument.cachedBody
+    });
+    const manifest = createRuntimeManifest({
+      bootstrap: createBundleBootstrap({
+        workspaceId: root.id,
+        displayName: root.displayName,
+        workspaceRef: createBrowserLocalWorkspaceReference(root.displayName)
+      }),
+      sessions: [
+        createSessionSnapshot({
+          deviceId: "device-1",
+          deviceName: "desktop:test",
+          openTabs: ["notes.md"],
+          activeTab: "notes.md",
+          layout: { previewOpen: true, sidebarOpen: true, activeActivity: "files", mobilePanel: "tree" },
+          sidebarState: { expandedPaths: [], searchOpen: true },
+          searchState: { query: "", lastQuery: "", selectedPath: null },
+          cursorState: {},
+          themeMode: "dark"
+        })
+      ],
+      drafts: refs,
+      resolutions: [resolution]
+    });
+
+    expect(manifest.draftRefs).toHaveLength(0);
   });
 
   it("builds compare items for two sessions", () => {
