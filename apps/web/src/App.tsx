@@ -1433,13 +1433,6 @@ export default function App() {
     }
   }, [activePdfIds, fileMap]);
 
-  async function handleOpenSampleWorkspace() {
-    clearWorkspaceAccess();
-    clearBundleAccess();
-    hydrateWorkspace(sampleRoot, sampleTree, sampleFiles, sampleBuffers);
-    setStatusMessage("Loaded bundled sample workspace.");
-  }
-
   async function trackWorkspaceScan<T>(
     work: (context: {
       onBrowserProgress: (progress: BrowserWorkspaceScanProgress) => void;
@@ -4813,7 +4806,6 @@ export default function App() {
             onCopyRelativePath={handleCopyTreeRelativePath}
             onRevealEntry={(node) => void handleRevealTreeEntry(node)}
             onOpenLocalWorkspace={handleOpenLocalWorkspace}
-            onOpenSample={handleOpenSampleWorkspace}
           />
         );
       case "search":
@@ -4895,7 +4887,6 @@ export default function App() {
         canToggleSidebar={true}
         canTogglePreview={Boolean(activeDocument?.isMarkdown)}
         bundleLinked={Boolean(bundleLink)}
-        onOpenSample={() => void handleOpenSampleWorkspace()}
         onOpenLocalWorkspace={() => void handleOpenLocalWorkspace()}
         onOpenWorkspaceBundle={() => void handleOpenWorkspaceBundle()}
         onChangeSaveLocation={() => void handleChangeSaveLocation()}

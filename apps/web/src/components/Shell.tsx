@@ -98,7 +98,6 @@ interface TitleBarProps {
   canToggleSidebar: boolean;
   canTogglePreview: boolean;
   bundleLinked: boolean;
-  onOpenSample: () => void;
   onOpenLocalWorkspace: () => void;
   onOpenWorkspaceBundle: () => void;
   onChangeSaveLocation: () => void;
@@ -207,18 +206,6 @@ export function TitleBar(props: TitleBarProps) {
                 <History size={14} />
                 <span className="menu__label">Open Workspace Bundle…</span>
               </button>
-              <button
-                type="button"
-                className="menu__item"
-                onClick={() => {
-                  props.onOpenSample();
-                  setMenuOpen(false);
-                }}
-              >
-                <Sparkles size={14} />
-                <span className="menu__label">Load Sample Workspace</span>
-              </button>
-              <div className="menu__divider" />
               <button
                 type="button"
                 className="menu__item"
@@ -381,7 +368,6 @@ interface FilesPanelProps {
   onCopyRelativePath: (node: FileTreeNode) => void;
   onRevealEntry: (node: FileTreeNode) => void;
   onOpenLocalWorkspace: () => void;
-  onOpenSample: () => void;
 }
 
 export function FilesPanel(props: FilesPanelProps) {
@@ -479,14 +465,6 @@ export function FilesPanel(props: FilesPanelProps) {
             onClick={props.onOpenLocalWorkspace}
           >
             <FolderOpen size={14} />
-          </button>
-          <button
-            type="button"
-            className="sidebar__icon-button"
-            title="Load sample workspace"
-            onClick={props.onOpenSample}
-          >
-            <Sparkles size={14} />
           </button>
         </>
       }
