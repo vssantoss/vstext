@@ -9,10 +9,9 @@ import {
   MessageDialog,
   ProvidersPanel,
   SearchPanel,
-  SaveDocumentPromptDialog,
+  SavePromptDialog,
   SessionCompareDialog,
   SessionPickerDialog,
-  SaveWorkspacePromptDialog,
   SessionsPanel,
   SettingsPanel,
   StatusBar,
@@ -5079,8 +5078,8 @@ export default function App() {
       ) : null}
 
       {dirtyTabClosePrompt && dirtyTabCloseFile ? (
-        <SaveDocumentPromptDialog
-          documentName={dirtyTabCloseFile.name}
+        <SavePromptDialog
+          message={`Save changes to ${dirtyTabCloseFile.name} before closing?`}
           saving={dirtyTabCloseSavePending}
           onSave={() => void handleSaveDirtyTabBeforeClose()}
           onDontSave={() => void handleDontSaveDirtyTabBeforeClose()}
@@ -5089,8 +5088,9 @@ export default function App() {
       ) : null}
 
       {closeWorkspacePromptOpen ? (
-        <SaveWorkspacePromptDialog
-          workspaceName={workspace.displayName}
+        <SavePromptDialog
+          message={`Save workspace changes for ${workspace.displayName} before closing?`}
+          saveLabel="Save Workspace"
           saving={closeWorkspaceSavePending}
           onSave={() => void handleSaveWorkspaceBeforeClose()}
           onDontSave={() => void handleCloseWithoutSavingWorkspaceFile()}

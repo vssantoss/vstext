@@ -691,8 +691,11 @@ function TreeRowImpl(props: TreeRowProps) {
   };
 
   if (node.kind === "directory") {
-    const childDirectories = (node.children ?? []).filter((child) => child.kind === "directory");
-    const childFiles = (node.children ?? []).filter((child) => child.kind === "file");
+    const childDirectories: FileTreeNode[] = [];
+    const childFiles: FileTreeNode[] = [];
+    for (const child of node.children ?? []) {
+      (child.kind === "directory" ? childDirectories : childFiles).push(child);
+    }
     const childCreateRow =
       expanded && props.creatingEntry?.parentPath === node.path ? (
         <CreateTreeEntryRow
@@ -1188,10 +1191,9 @@ function TabStripImpl(props: TabStripProps) {
   const contextTabIndex = contextMenu ? props.openTabs.indexOf(contextMenu.tabId) : -1;
   const isRightmost = contextTabIndex === props.openTabs.length - 1;
   const isPreviewTab = contextMenu ? props.previewTabId === contextMenu.tabId : false;
-  const hasSavedTabs = props.openTabs.some((id) => {
-    const d = props.getDocument(id);
-    return d && !d.dirty;
-  });
+  const hasSavedTabs = contextMenu
+    ? props.openTabs.some((id) => { const d = props.getDocument(id); return d && !d.dirty; })
+    : false;
 
   return (
     <div
@@ -1680,16 +1682,9 @@ export function ConfirmationDialog(props: ConfirmationDialogProps) {
   );
 }
 
-interface SaveWorkspacePromptDialogProps {
-  workspaceName: string;
-  saving: boolean;
-  onSave: () => void;
-  onDontSave: () => void;
-  onCancel: () => void;
-}
-
-interface SaveDocumentPromptDialogProps {
-  documentName: string;
+interface SavePromptDialogProps {
+  message: string;
+  saveLabel?: string;
   saving: boolean;
   onSave: () => void;
   onDontSave: () => void;
@@ -1697,17 +1692,17 @@ interface SaveDocumentPromptDialogProps {
 }
 
 /**
- * Renders the close-tab prompt for a dirty document.
+ * Renders a save-or-discard prompt for unsaved changes.
  *
- * @param props - The document name, pending state, and prompt action handlers.
- * @returns Modal JSX for saving, discarding, or cancelling the tab close.
+ * @param props - The prompt message, pending state, and action handlers.
+ * @returns Modal JSX for saving, discarding, or cancelling.
  */
-export function SaveDocumentPromptDialog(props: SaveDocumentPromptDialogProps) {
+export function SavePromptDialog(props: SavePromptDialogProps) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal>
       <div className="modal">
         <div className="modal__simple-body">
-          <p>Save changes to {props.documentName} before closing?</p>
+          <p>{props.message}</p>
         </div>
         <div className="modal__actions">
           <button type="button" className="button button--ghost" onClick={props.onCancel} disabled={props.saving}>
@@ -1717,36 +1712,7 @@ export function SaveDocumentPromptDialog(props: SaveDocumentPromptDialogProps) {
             Don't Save
           </button>
           <button type="button" className="button" onClick={props.onSave} disabled={props.saving}>
-            {props.saving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Renders the desktop close prompt for unsaved workspace bundle state.
- *
- * @param props - The workspace name, pending state, and prompt action handlers.
- * @returns Modal JSX for saving, discarding, or cancelling the window close.
- */
-export function SaveWorkspacePromptDialog(props: SaveWorkspacePromptDialogProps) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal>
-      <div className="modal">
-        <div className="modal__simple-body">
-          <p>Save workspace changes for {props.workspaceName} before closing?</p>
-        </div>
-        <div className="modal__actions">
-          <button type="button" className="button button--ghost" onClick={props.onCancel} disabled={props.saving}>
-            Cancel
-          </button>
-          <button type="button" className="button button--ghost" onClick={props.onDontSave} disabled={props.saving}>
-            Don't Save
-          </button>
-          <button type="button" className="button" onClick={props.onSave} disabled={props.saving}>
-            {props.saving ? "Saving..." : "Save Workspace"}
+            {props.saving ? "Saving..." : (props.saveLabel ?? "Save")}
           </button>
         </div>
       </div>

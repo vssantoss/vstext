@@ -43,6 +43,7 @@
   --radius-sm: 3px;
   --radius-md: 5px;
   --radius-lg: 6px;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
 
   color-scheme: dark;
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -392,7 +393,7 @@ textarea:focus-visible,
 .menu__shortcut {
   color: var(--text-dim);
   font-size: 11px;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 /* ---------- Context menu (fixed-position, right-click) ---------- */
@@ -764,7 +765,7 @@ textarea:focus-visible,
 .search-result span {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -815,7 +816,7 @@ textarea:focus-visible,
   font-size: 11px;
   color: var(--text-muted);
   margin: 0 0 6px;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 .panel-action {
@@ -1302,7 +1303,7 @@ textarea:focus-visible,
   flex: 1;
   min-height: 0;
   min-width: 0;
-  font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
 }
 
@@ -1403,7 +1404,7 @@ textarea:focus-visible,
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   color: var(--text);
@@ -1445,7 +1446,7 @@ textarea:focus-visible,
 }
 
 .markdown-preview code {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
   padding: 0.15em 0.4em;
   background: var(--hover);
@@ -1581,7 +1582,7 @@ textarea:focus-visible,
   max-width: 40ch;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 
@@ -1805,7 +1806,7 @@ textarea:focus-visible,
 .compare-row small {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   word-break: break-word;
   display: block;
 }
@@ -1843,7 +1844,7 @@ textarea:focus-visible,
   padding: 10px 12px;
   max-height: 320px;
   overflow: auto;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
   white-space: pre-wrap;
