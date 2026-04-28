@@ -93,7 +93,6 @@ function getFileIcon(name: string): LucideIcon {
 
 interface TitleBarProps {
   workspaceName: string;
-  statusMessage: string;
   sidebarOpen: boolean;
   previewOpen: boolean;
   canToggleSidebar: boolean;
@@ -143,10 +142,6 @@ export function TitleBar(props: TitleBarProps) {
         <span className="titlebar__app-name">{APP_NAME}</span>
         <span className="titlebar__workspace">{props.workspaceName}</span>
       </div>
-
-      <span className="titlebar__status" title={props.statusMessage}>
-        {props.statusMessage}
-      </span>
 
       <div className="titlebar__spacer" />
 

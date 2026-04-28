@@ -4890,7 +4890,6 @@ export default function App() {
     <div className="app-shell">
       <TitleBar
         workspaceName={workspace.displayName}
-        statusMessage={statusMessage}
         sidebarOpen={layout.sidebarOpen}
         previewOpen={layout.previewOpen}
         canToggleSidebar={true}

@@ -2,6 +2,28 @@
 
 This glossary defines the recurring product, architecture, runtime, storage, and source-code terms used in vsText.
 
+## Basic App Flow
+
+To start using the app, choose **Open Folder**. The folder you open becomes your **workspace**. A workspace is the real folder on your computer that contains the files you want to read or edit.
+
+After a workspace is open, its files appear in the **Explorer**. Clicking a file opens it in a **tab**. If you single-click a file, it may open as a **preview tab**, which is temporary. If you edit it, double-click it, or choose **Keep Open**, it becomes a regular tab.
+
+When you type in a file, that file has **unsaved changes**. The app also calls this a **dirty file**. Dirty only means the file has changes in the editor that have not been written back to the real file yet.
+
+To write those changes to the real file in your workspace, use **Save File**. Saving a file updates the actual file in the folder you opened.
+
+If you want to continue the same workspace session on another device, choose a **workspace bundle**. The workspace bundle is a separate folder where vsText saves your session, drafts, and cross-device state. This bundle is what allows the workspace session to be shared between devices when the bundle folder is synced with a tool like OneDrive, Google Drive for desktop, or Dropbox.
+
+Use **Save Session** to save the editor session into the workspace bundle. A session includes things like open tabs, layout, theme, search state, cursor positions, and drafts for dirty files.
+
+A **draft** is a saved copy of unsaved file content inside the workspace bundle. It is different from a dirty file: dirty means the file has unsaved edits right now in this app; draft means those unsaved edits were saved into the bundle so they can be recovered or reviewed across devices.
+
+On another device, use **Open Workspace Bundle** to open the synced bundle. The app uses the bundle to find the related workspace and restore the saved session. If another device saved newer state, you may see options like **Resume remote** or **Compare sessions**.
+
+If another device saved unsaved content for a file, you may see a **remote draft**. The app lets you review that draft before it changes your real file. If there is a conflict, you can keep your local content, use the other version, or **Save copy** so no work is lost.
+
+The app also keeps a **local cache** on each device. This helps reopen your last local app state, but it is not for sharing between devices. Sharing between devices depends on the workspace bundle being available and synced.
+
 ## Terms App Users Should Know First
 
 - **Workspace**: The folder you open in vsText. It contains the real files you want to read or edit.
